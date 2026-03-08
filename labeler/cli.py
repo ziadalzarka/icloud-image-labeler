@@ -52,13 +52,22 @@ def _run(args, cfg):
         )
 
     while not is_shutting_down():
-        items = discover()
+        if args.uuid:
+            import osxphotos
+            photosdb = osxphotos.PhotosDB()
+            items = [p for u in args.uuid for p in photosdb.photos(uuid=[u])]
+            if not items:
+                logger.error(f"No photos found for UUIDs: {args.uuid}")
+                return
+            logger.info(f"Processing {len(items)} item(s) by UUID")
+        else:
+            items = discover()
         if items:
             process_batch(
                 items, base_url=base_url, model=model,
                 threads=threads, video_frames=video_frames,
                 max_dimension=cfg["max_dimension"], write=write,
-                discover_fn=discover, refresh_interval=600,
+                discover_fn=discover, refresh_interval=1800,
             )
         else:
             logger.info("No unprocessed media found.")
@@ -151,6 +160,7 @@ def main():
     run_parser.add_argument("--model", default=None)
     run_parser.add_argument("--threads", type=int, default=None)
     run_parser.add_argument("--video-frames", type=int, default=None)
+    run_parser.add_argument("--uuid", nargs="+", default=None, help="Process specific photo UUIDs")
     run_parser.add_argument("--loop", action="store_true", default=False)
     run_parser.add_argument("-v", "--verbose", action="store_true", default=False)
 

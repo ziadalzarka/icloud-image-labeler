@@ -94,6 +94,8 @@ def record_item(
 ):
     """Record metrics for a single processed item."""
     conn = _get_conn()
+    if status == "success":
+        conn.execute("DELETE FROM item_metrics WHERE uuid = ? AND status = 'error'", (uuid,))
     conn.execute(
         """INSERT INTO item_metrics (
             uuid, filename, media_type, is_icloud_only, status, error_message,
