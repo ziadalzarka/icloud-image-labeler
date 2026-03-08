@@ -31,9 +31,11 @@
 - Videos require `ffmpeg` (system dependency) for frame extraction.
 - Use `ffprobe` to get duration, then `ffmpeg -ss <timestamp> -i <file> -frames:v 1` for each frame.
 - Large videos (100+ MB) take time to download from iCloud via `use_photos_export=True`. Set a generous timeout (300s).
-- All 10 frames are sent as separate `image_url` entries in a single LLM request — this can be a large payload.
+- Video frames are sent as separate `image_url` entries in a single LLM request. Each frame uses ~1,856 tokens in the LM Studio context window. With a 20,224-token context slot, 10 frames (~18,560 tokens) overflows when combined with the prompt. Default is 5 frames to stay within limits.
+- Photos and videos cannot be processed concurrently — LM Studio can only handle one video's worth of frames at a time. Process all photos first (parallel), then videos one at a time.
 
 ### Concurrency
 
 - `PhotoScript` writes use AppleScript which is single-threaded in Photos.app. Parallel writes may cause issues — serialize metadata writes even when processing in parallel.
 - `osxphotos.PhotosDB()` should only be instantiated once and shared across threads.
+- Photos and videos must be processed in separate phases: parallel photos first, then sequential videos. Never mix them — the LLM context window can't handle concurrent video frame batches.
