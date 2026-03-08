@@ -43,16 +43,20 @@ def _run(args, cfg):
     loop = args.loop
     poll_interval = cfg["poll_interval"]
 
-    while True:
-        items = get_unprocessed_media(
+    def discover():
+        return get_unprocessed_media(
             limit=limit, days_back=days, to_days=to_days,
             photo=photo, video=video,
         )
+
+    while True:
+        items = discover()
         if items:
             process_batch(
                 items, base_url=base_url, model=model,
                 threads=threads, video_frames=video_frames,
                 max_dimension=cfg["max_dimension"], write=write,
+                discover_fn=discover, refresh_interval=600,
             )
         else:
             logger.info("No unprocessed media found.")
