@@ -34,7 +34,7 @@ Respond ONLY with valid JSON in this exact format:
   "ocr_text": "any visible text"
 }"""
 
-VIDEO_SYSTEM_PROMPT = """You are a video labeling assistant. You will be given 10 frames extracted at equal intervals from a video. Analyze all frames together to understand the video content, then generate:
+VIDEO_SYSTEM_PROMPT = """You are a video labeling assistant. You will be given frames extracted at equal intervals from a video. Analyze all frames together to understand the video content, then generate:
 1. **keywords**: A list of descriptive keywords/tags (objects, scenes, activities, colors, mood, actions). 10-20 keywords.
 2. **title**: A short descriptive title (5-10 words).
 3. **description**: A one-sentence description of what happens in the video.
@@ -76,7 +76,21 @@ def get_unprocessed_photos(limit: int = 1, days_back: int = 7, media_type: str =
     return selected
 
 
-def photo_to_base64(photo: osxphotos.PhotoInfo) -> str:
+MAX_DIMENSION = 1024
+
+
+def resize_if_needed(img, max_dim: int = 1024):
+    """Resize image so the longest side is at most max_dim pixels."""
+    w, h = img.size
+    if max(w, h) <= max_dim:
+        return img
+    scale = max_dim / max(w, h)
+    new_w, new_h = int(w * scale), int(h * scale)
+    print(f"  Resizing {w}x{h} -> {new_w}x{new_h}")
+    return img.resize((new_w, new_h), img.Resampling.LANCZOS if hasattr(img, 'Resampling') else 1)
+
+
+def photo_to_base64(photo: osxphotos.PhotoInfo, max_dim: int = MAX_DIMENSION) -> str:
     """Export photo as JPEG and encode as base64."""
     from PIL import Image
     import pillow_heif
@@ -98,6 +112,7 @@ def photo_to_base64(photo: osxphotos.PhotoInfo) -> str:
         print(f"  Converting to JPEG...")
         img = Image.open(export_path)
         img = img.convert("RGB")
+        img = resize_if_needed(img, max_dim=max_dim)
         img.save(jpeg_path, "JPEG", quality=85)
         jpeg_mb = os.path.getsize(jpeg_path) / (1024 * 1024)
         print(f"  JPEG: {img.size[0]}x{img.size[1]} ({jpeg_mb:.1f} MB)")
@@ -109,7 +124,7 @@ def photo_to_base64(photo: osxphotos.PhotoInfo) -> str:
         return b64
 
 
-def video_to_base64_frames(photo: osxphotos.PhotoInfo, num_frames: int = 10) -> list[str]:
+def video_to_base64_frames(photo: osxphotos.PhotoInfo, num_frames: int = 5, max_dim: int = MAX_DIMENSION) -> list[str]:
     """Export video, extract frames at equal intervals, return as base64 JPEGs."""
     print(f"  Exporting video to temp directory (missing={photo.ismissing})...")
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -140,7 +155,9 @@ def video_to_base64_frames(photo: osxphotos.PhotoInfo, num_frames: int = 10) -> 
             print(f"  Extracting frame {i+1}/{num_frames} at {timestamp:.1f}s...")
             subprocess.run(
                 ["ffmpeg", "-v", "quiet", "-ss", str(timestamp), "-i", video_path,
-                 "-frames:v", "1", "-q:v", "2", frame_path],
+                 "-frames:v", "1", "-q:v", "2",
+                 "-vf", f"scale='min({max_dim},iw)':'min({max_dim},ih)':force_original_aspect_ratio=decrease",
+                 frame_path],
                 capture_output=True
             )
             if os.path.exists(frame_path):
@@ -260,7 +277,10 @@ def main():
     parser.add_argument("--write", action="store_true", help="Actually write to Photos (default: dry run)")
     parser.add_argument("--base-url", default=LM_STUDIO_BASE_URL, help="LM Studio API base URL")
     parser.add_argument("--model", default=LM_STUDIO_MODEL, help="Model name in LM Studio")
+    parser.add_argument("--max-dim", type=int, default=MAX_DIMENSION, help="Max image dimension in pixels (default: 1024)")
     args = parser.parse_args()
+
+    max_dim = args.max_dim
 
     dry_run = not args.write
     if dry_run:
@@ -280,10 +300,10 @@ def main():
         print(f"\n[{i}/{len(photos)}] Processing {media_type}: {photo.original_filename} ({photo.uuid[:8]}...) taken={photo.date} added={photo.date_added}")
         try:
             if photo.isphoto:
-                image_b64 = photo_to_base64(photo)
+                image_b64 = photo_to_base64(photo, max_dim=max_dim)
                 labels = label_photo(client, image_b64, photo.original_filename)
             else:
-                frames_b64 = video_to_base64_frames(photo)
+                frames_b64 = video_to_base64_frames(photo, max_dim=max_dim)
                 labels = label_video(client, frames_b64, photo.original_filename)
             write_metadata(photo.uuid, labels, dry_run=dry_run)
         except Exception as e:

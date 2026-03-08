@@ -11,8 +11,23 @@ The system SHALL send photos to a local LM Studio instance (OpenAI-compatible AP
 - **WHEN** a photo is in HEIC format
 - **THEN** it is converted to JPEG (quality 85) using Pillow + pillow-heif before sending to the LLM
 
+### Requirement: Resize images to fit LLM context window
+The system SHALL resize all images (photos and video frames) so the longest side does not exceed a configurable `max_dimension` (default: 1024px). Aspect ratio MUST be maintained. This prevents LM Studio from running out of context/memory when processing multiple images.
+
+#### Scenario: Large photo resized
+- **WHEN** a photo is 4032x3024 pixels and `max_dimension=1024`
+- **THEN** it is resized to 1024x768 before encoding and sending to the LLM
+
+#### Scenario: Small photo not resized
+- **WHEN** a photo is 800x600 pixels and `max_dimension=1024`
+- **THEN** it is sent at its original resolution
+
+#### Scenario: Video frames resized during extraction
+- **WHEN** video frames are extracted and the video resolution exceeds `max_dimension`
+- **THEN** ffmpeg scales frames down to fit within `max_dimension` while maintaining aspect ratio
+
 ### Requirement: Label videos via local LLM with frame extraction
-The system SHALL extract frames from videos at equal intervals using ffmpeg and send all frames to the LLM as a multi-image request. The number of frames SHALL be configurable (default: 10).
+The system SHALL extract frames from videos at equal intervals using ffmpeg and send all frames to the LLM as a multi-image request. The number of frames SHALL be configurable (default: 5).
 
 #### Scenario: Successful video labeling
 - **WHEN** a video is processed with `video_frames=10`

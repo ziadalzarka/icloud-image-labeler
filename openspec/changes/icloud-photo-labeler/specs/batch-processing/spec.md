@@ -1,15 +1,19 @@
 ## ADDED Requirements
 
-### Requirement: Parallel processing with thread pool
-The system SHALL process media items in parallel using a thread pool with a configurable max thread count (default: 4). Video processing SHALL be limited to 1 concurrent job via a semaphore.
+### Requirement: Separate photo and video processing
+The system SHALL process photos and videos in separate passes, never concurrently. Photos SHALL be processed first in parallel using a thread pool with a configurable max thread count (default: 4). Videos SHALL be processed one at a time sequentially after all photos are complete.
 
 #### Scenario: Parallel photo processing
 - **WHEN** 4 photos are queued with `threads=4`
 - **THEN** up to 4 photos are processed concurrently
 
-#### Scenario: Video concurrency limit
-- **WHEN** 3 videos and 2 photos are queued with `threads=4`
-- **THEN** only 1 video processes at a time, while photos fill remaining thread slots
+#### Scenario: Sequential video processing
+- **WHEN** 3 videos are queued
+- **THEN** videos are processed one at a time sequentially
+
+#### Scenario: Mixed media queue
+- **WHEN** 4 photos and 2 videos are queued
+- **THEN** all photos are processed first (up to 4 in parallel), then videos are processed one at a time
 
 ### Requirement: Daemon mode via launchd
 The system SHALL support running as a macOS Launch Agent that polls for unprocessed media at a configurable interval (default: 300 seconds). The daemon SHALL auto-start on user login and auto-restart on crash.

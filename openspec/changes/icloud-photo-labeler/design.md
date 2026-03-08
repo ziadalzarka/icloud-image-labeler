@@ -67,7 +67,6 @@ Move config from project directory to `~/.image-labeler/config.json` since this 
 ```
 ~/.image-labeler/
   config.json      # LM Studio URL, model, default flags
-  daemon.pid       # PID of running daemon
   daemon.log       # Daemon output log
 ```
 
@@ -77,10 +76,12 @@ Config schema (all parameters — daemon reads everything from here):
   "base_url": "http://devbox.local:1234/v1",
   "model": "qwen/qwen3.5-9b",
   "poll_interval": 300,
-  "limit_per_cycle": 10,
-  "days": 7,
+  "limit_per_cycle": 0,
+  "days": 0,
+  "to_days": 0,
   "threads": 4,
-  "video_frames": 10,
+  "video_frames": 5,
+  "max_dimension": 1024,
   "photo": true,
   "video": true,
   "write": true
@@ -107,6 +108,7 @@ image-labeler/
     discovery.py      # Photos library query + filtering
     exporter.py       # Photo/video export (HEIC→JPEG, video frame extraction)
     llm.py            # LLM client, response parsing, retry logic
+    processor.py      # Batch orchestration, parallel processing, error tracking
     writer.py         # Write keywords/title/description back to Photos.app
   requirements.txt
   poc.py              # Original POC (kept for reference)
@@ -114,7 +116,14 @@ image-labeler/
 
 **Why split processor into exporter/llm/writer:** Each has a distinct domain — media export (Pillow, ffmpeg), LLM communication (OpenAI SDK, response parsing), and Photos.app writes (PhotoScript/AppleScript). Splitting makes each file focused and testable independently.
 
-### 6. LLM Response Parsing: Shared utility with retry
+### 6. Image Resize: Cap images to configurable max dimension
+
+All images (photos and video frames) are resized so the longest side doesn't exceed `max_dimension` (default 1024px), maintaining aspect ratio. This is critical because LM Studio's vision models encode images as tokens — a 4032x3024 photo uses far more context than a 1024x768 one. Without resizing, processing 5 video frames can exhaust the model's context window (observed: "failed to prepare attention ubatches" at ~60% through frame 4).
+
+- Photos: resized via Pillow (`Image.resize` with LANCZOS) after HEIC→JPEG conversion
+- Video frames: resized via ffmpeg `scale` filter during extraction (`force_original_aspect_ratio=decrease`)
+
+### 7. LLM Response Parsing: Shared utility with retry
 
 Both photo and video labeling need the same response cleaning (strip `<think>` blocks, strip markdown fences, parse JSON). Extract this to a shared function. Add one retry on JSON parse failure with a "please respond with valid JSON only" follow-up message.
 
