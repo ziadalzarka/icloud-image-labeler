@@ -33,9 +33,9 @@ def get_unprocessed_media(
         date_range = f"until {to_date.strftime('%Y-%m-%d')}"
     else:
         date_range = "all time"
-    logger.info(f"Querying media ({date_range})...")
+    logger.debug(f"Querying media ({date_range})...")
     recent = photosdb.photos(from_date=from_date, to_date=to_date)
-    logger.info(f"Found {len(recent)} items in date range")
+    logger.debug(f"Found {len(recent)} items in date range")
 
     # Filter: no keywords, not hidden
     items = [p for p in recent if not p.keywords and not p.hidden]

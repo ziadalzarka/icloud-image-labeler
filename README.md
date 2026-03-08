@@ -70,3 +70,15 @@ python -m labeler daemon stop      # Uninstall Launch Agent
 ```
 
 The daemon runs as a macOS Launch Agent (`~/Library/LaunchAgents/com.image-labeler.plist`). It auto-restarts on crash and starts on login. Logs are written to `~/.image-labeler/daemon.log`.
+
+## Metrics
+
+Processing metrics are stored in a SQLite database at `~/.image-labeler/metrics.db`. View them with Datasette:
+
+```sh
+python -m labeler metrics serve           # Open Datasette UI at http://localhost:8001
+python -m labeler metrics serve --port 9000  # Custom port
+python -m labeler metrics path            # Print database path
+```
+
+Tracked metrics per item: export/LLM/write durations, image dimensions, LLM retry count, keyword count, OCR presence, and errors. Tracked per run: items found/processed/failed, wall clock duration, model, and thread count.

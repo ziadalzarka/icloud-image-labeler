@@ -4,19 +4,22 @@ import logging
 import sys
 import time
 
-from labeler import config, daemon
+from labeler import config, daemon, metrics
 from labeler.discovery import get_unprocessed_media
 from labeler.processor import process_batch
 
 logger = logging.getLogger("labeler")
 
 
-def _setup_logging():
+def _setup_logging(verbose: bool = False):
     logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
+    # Keep third-party loggers at INFO to avoid dumping base64/HTTP bodies
+    for name in ("httpx", "openai", "httpcore"):
+        logging.getLogger(name).setLevel(logging.INFO)
 
 
 def _run(args, cfg):
@@ -100,8 +103,25 @@ def _daemon_cmd(args):
         sys.exit(1)
 
 
+def _metrics_cmd(args):
+    action = args.metrics_action
+
+    if action == "path":
+        print(metrics.DB_PATH)
+    elif action == "serve":
+        import subprocess as sp
+        port = args.port or 8001
+        print(f"Starting Datasette on http://localhost:{port}")
+        print(f"Database: {metrics.DB_PATH}")
+        sp.run(["datasette", "serve", metrics.DB_PATH, "-p", str(port)])
+
+
 def main():
-    _setup_logging()
+    # Pre-parse for verbose flag before full parsing
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("-v", "--verbose", action="store_true", default=False)
+    known, _ = pre.parse_known_args()
+    _setup_logging(verbose=known.verbose)
 
     parser = argparse.ArgumentParser(
         prog="labeler",
@@ -125,6 +145,7 @@ def main():
     run_parser.add_argument("--threads", type=int, default=None)
     run_parser.add_argument("--video-frames", type=int, default=None)
     run_parser.add_argument("--loop", action="store_true", default=False)
+    run_parser.add_argument("-v", "--verbose", action="store_true", default=False)
 
     # daemon subcommand
     daemon_parser = subparsers.add_parser("daemon", help="Manage background daemon")
@@ -140,8 +161,16 @@ def main():
     config_parser.add_argument("key", nargs="?", default=None)
     config_parser.add_argument("value", nargs="?", default=None)
 
+    # metrics subcommand
+    metrics_parser = subparsers.add_parser("metrics", help="View processing metrics")
+    metrics_parser.add_argument(
+        "metrics_action", choices=["path", "serve"],
+    )
+    metrics_parser.add_argument("--port", type=int, default=None)
+
     args = parser.parse_args()
     cfg = config.load_config()
+    metrics.init_db()
 
     if args.command is None or args.command == "run":
         if args.command is None:
@@ -152,3 +181,5 @@ def main():
         _daemon_cmd(args)
     elif args.command == "config":
         _config_cmd(args, cfg)
+    elif args.command == "metrics":
+        _metrics_cmd(args)

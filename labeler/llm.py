@@ -50,21 +50,24 @@ def _parse_response(raw: str) -> dict:
     return json.loads(cleaned)
 
 
-def _request_labels(client: OpenAI, model: str, messages: list) -> dict:
-    """Send request to LLM and parse response, with one retry on JSON failure."""
-    logger.info(f"  Sending to LM Studio ({model})...")
+def _request_labels(client: OpenAI, model: str, messages: list) -> tuple[dict, int]:
+    """Send request to LLM and parse response, with one retry on JSON failure.
+
+    Returns (labels_dict, retry_count).
+    """
+    logger.debug(f"Sending to LM Studio ({model})...")
     response = client.chat.completions.create(
         model=model,
         messages=messages,
         temperature=0.3,
     )
     raw = response.choices[0].message.content.strip()
-    logger.info(f"  Received response ({len(raw)} chars)")
+    logger.debug(f"Received response ({len(raw)} chars)")
 
     try:
-        return _parse_response(raw)
+        return _parse_response(raw), 0
     except (json.JSONDecodeError, IndexError):
-        logger.warning("  JSON parse failed, retrying with correction prompt...")
+        logger.warning("JSON parse failed, retrying with correction prompt...")
         messages.append({"role": "assistant", "content": raw})
         messages.append({"role": "user", "content": "Please respond with valid JSON only."})
         response = client.chat.completions.create(
@@ -74,13 +77,13 @@ def _request_labels(client: OpenAI, model: str, messages: list) -> dict:
         )
         raw = response.choices[0].message.content.strip()
         labels = _parse_response(raw)
-        logger.info(f"  Retry succeeded: {len(labels.get('keywords', []))} keywords")
-        return labels
+        logger.debug(f"Retry succeeded: {len(labels.get('keywords', []))} keywords")
+        return labels, 1
 
 
-def label_photo(client: OpenAI, model: str, image_b64: str, filename: str) -> dict:
-    """Send a photo to the LLM for labeling."""
-    logger.info(f"  Labeling photo: {filename}")
+def label_photo(client: OpenAI, model: str, image_b64: str, filename: str) -> tuple[dict, int]:
+    """Send a photo to the LLM for labeling. Returns (labels, retries)."""
+    logger.info(f"Labeling photo: {filename}")
     messages = [
         {"role": "system", "content": PHOTO_SYSTEM_PROMPT},
         {
@@ -94,14 +97,14 @@ def label_photo(client: OpenAI, model: str, image_b64: str, filename: str) -> di
             ],
         },
     ]
-    labels = _request_labels(client, model, messages)
-    logger.info(f"  Parsed: {len(labels.get('keywords', []))} keywords")
-    return labels
+    labels, retries = _request_labels(client, model, messages)
+    logger.debug(f"Parsed: {len(labels.get('keywords', []))} keywords")
+    return labels, retries
 
 
-def label_video(client: OpenAI, model: str, frames_b64: list[str], filename: str) -> dict:
-    """Send video frames to the LLM for labeling."""
-    logger.info(f"  Labeling video: {filename} ({len(frames_b64)} frames)")
+def label_video(client: OpenAI, model: str, frames_b64: list[str], filename: str) -> tuple[dict, int]:
+    """Send video frames to the LLM for labeling. Returns (labels, retries)."""
+    logger.info(f"Labeling video: {filename} ({len(frames_b64)} frames)")
     image_content = [
         {"type": "text", "text": f"These are {len(frames_b64)} frames extracted at equal intervals from a video. Label this video:"}
     ]
@@ -115,6 +118,6 @@ def label_video(client: OpenAI, model: str, frames_b64: list[str], filename: str
         {"role": "system", "content": VIDEO_SYSTEM_PROMPT},
         {"role": "user", "content": image_content},
     ]
-    labels = _request_labels(client, model, messages)
-    logger.info(f"  Parsed: {len(labels.get('keywords', []))} keywords")
-    return labels
+    labels, retries = _request_labels(client, model, messages)
+    logger.debug(f"Parsed: {len(labels.get('keywords', []))} keywords")
+    return labels, retries
