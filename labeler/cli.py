@@ -5,8 +5,10 @@ import sys
 import time
 
 from labeler import config, daemon, metrics
+from labeler.checks import check_dependencies
 from labeler.discovery import get_unprocessed_media
 from labeler.processor import process_batch
+from labeler.shutdown import install_handlers as install_signal_handlers, is_shutting_down, wait as shutdown_wait
 
 logger = logging.getLogger("labeler")
 
@@ -49,7 +51,7 @@ def _run(args, cfg):
             photo=photo, video=video,
         )
 
-    while True:
+    while not is_shutting_down():
         items = discover()
         if items:
             process_batch(
@@ -61,10 +63,11 @@ def _run(args, cfg):
         else:
             logger.info("No unprocessed media found.")
 
-        if not loop:
+        if not loop or is_shutting_down():
             break
         logger.info(f"Sleeping {poll_interval}s until next cycle...")
-        time.sleep(poll_interval)
+        if shutdown_wait(poll_interval):
+            break
 
 
 def _config_cmd(args, cfg):
@@ -175,11 +178,13 @@ def main():
     args = parser.parse_args()
     cfg = config.load_config()
     metrics.init_db()
+    install_signal_handlers()
 
     if args.command is None or args.command == "run":
         if args.command is None:
             # Default to run with default args
             args = run_parser.parse_args([])
+        check_dependencies()
         _run(args, cfg)
     elif args.command == "daemon":
         _daemon_cmd(args)
