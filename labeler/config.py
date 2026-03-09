@@ -46,7 +46,9 @@ def save_config(config: dict):
 
 def set_value(key: str, value: str):
     if key not in VALID_KEYS:
-        raise ValueError(f"Unknown config key: {key}. Valid keys: {', '.join(sorted(VALID_KEYS))}")
+        raise ValueError(
+            f"Unknown config key: {key}. Valid keys: {', '.join(sorted(VALID_KEYS))}"
+        )
     config = load_config()
     # Coerce type based on defaults
     default_val = DEFAULTS[key]
