@@ -86,10 +86,11 @@ def _label_and_write_photo(
     base_url: str,
     model: str,
     write: bool,
+    api_key: str = "",
 ) -> None:
     """LLM label + write metadata for an already-exported photo."""
     t_start = time.monotonic()
-    client = create_client(base_url)
+    client = create_client(base_url, api_key=api_key)
 
     t_llm = time.monotonic()
     labels, llm_retries = label_photo(client, model, image_b64, item.original_filename)
@@ -120,12 +121,12 @@ def _label_and_write_photo(
 
 
 def _label_photo_with_retry(item, image_b64, export_meta, export_duration,
-                             base_url, model, write, tracker):
+                             base_url, model, write, tracker, api_key=""):
     attempt = 0
     while True:
         try:
             _label_and_write_photo(item, image_b64, export_meta, export_duration,
-                                   base_url, model, write)
+                                   base_url, model, write, api_key=api_key)
             return
         except Exception as e:
             if _is_retryable_error(e):
@@ -149,10 +150,11 @@ def _process_single_video(
     video_frames: int,
     max_dimension: int,
     write: bool,
+    api_key: str = "",
 ) -> None:
     """Export frames, label, write metadata, record metrics for one video."""
     t_start = time.monotonic()
-    client = create_client(base_url)
+    client = create_client(base_url, api_key=api_key)
 
     t_export = time.monotonic()
     frames_b64, export_meta = export_video_frames_as_base64(
@@ -192,11 +194,11 @@ def _process_single_video(
     )
 
 
-def _process_video_with_retry(item, base_url, model, video_frames, max_dimension, write, tracker):
+def _process_video_with_retry(item, base_url, model, video_frames, max_dimension, write, tracker, api_key=""):
     attempt = 0
     while True:
         try:
-            _process_single_video(item, base_url, model, video_frames, max_dimension, write)
+            _process_single_video(item, base_url, model, video_frames, max_dimension, write, api_key=api_key)
             return
         except Exception as e:
             if _is_retryable_error(e):
@@ -223,6 +225,7 @@ def process_batch(
     write: bool = True,
     discover_fn=None,
     refresh_interval: int = 600,
+    api_key: str = "",
 ):
     """Process a batch of media: photos in parallel, then videos sequentially.
 
@@ -324,7 +327,7 @@ def process_batch(
 
                 fut = pool.submit(
                     _label_photo_with_retry, p, image_b64, export_meta, export_duration,
-                    base_url, model, write, tracker,
+                    base_url, model, write, tracker, api_key,
                 )
                 in_flight[fut] = p
 
@@ -357,7 +360,7 @@ def process_batch(
             _maybe_refresh(photo_insert_idx=len(photos), video_insert_idx=i)
 
             try:
-                _process_video_with_retry(video, base_url, model, video_frames, max_dimension, write, tracker)
+                _process_video_with_retry(video, base_url, model, video_frames, max_dimension, write, tracker, api_key)
                 videos_ok += 1
                 logger.info(f"[{processed}/{total}] Done: {video.original_filename} (added {_format_date(video)})")
             except MaxFailuresExceeded:

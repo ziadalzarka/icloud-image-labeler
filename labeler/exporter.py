@@ -19,12 +19,31 @@ def _resize_if_needed(img, max_dim: int):
     return img.resize((new_w, new_h), img.Resampling.LANCZOS if hasattr(img, 'Resampling') else 1)
 
 
-def export_photo_as_base64(photo: osxphotos.PhotoInfo, max_dimension: int = 1024) -> tuple[str, dict]:
-    """Export photo as JPEG and return (base64_string, metadata_dict)."""
+def _open_image(path: str, tmpdir: str):
+    """Open an image file with PIL, falling back to sips for unsupported formats."""
     from PIL import Image
     import pillow_heif
     pillow_heif.register_heif_opener()
 
+    try:
+        return Image.open(path)
+    except Exception:
+        logger.debug(f"PIL cannot open {path}, converting via sips...")
+        sips_jpg = os.path.join(tmpdir, "sips_converted.jpg")
+        result = subprocess.run(
+            ["sips", "-s", "format", "jpeg", path, "--out", sips_jpg],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0 or not os.path.exists(sips_jpg):
+            raise RuntimeError(
+                f"sips conversion failed for {os.path.basename(path)}: "
+                f"{result.stderr.strip()}"
+            )
+        return Image.open(sips_jpg)
+
+
+def export_photo_as_base64(photo: osxphotos.PhotoInfo, max_dimension: int = 1024) -> tuple[str, dict]:
+    """Export photo as JPEG and return (base64_string, metadata_dict)."""
     logger.debug(f"Exporting photo (missing={photo.ismissing})...")
     with tempfile.TemporaryDirectory() as tmpdir:
         exported = photo.export(tmpdir, use_photos_export=True, timeout=120)
@@ -34,10 +53,10 @@ def export_photo_as_base64(photo: osxphotos.PhotoInfo, max_dimension: int = 1024
         size_mb = os.path.getsize(export_path) / (1024 * 1024)
         logger.debug(f"Exported {export_path} ({size_mb:.1f} MB)")
 
-        jpeg_path = os.path.join(tmpdir, "photo.jpg")
-        img = Image.open(export_path)
+        img = _open_image(export_path, tmpdir)
         img = img.convert("RGB")
         img = _resize_if_needed(img, max_dimension)
+        jpeg_path = os.path.join(tmpdir, "photo.jpg")
         img.save(jpeg_path, "JPEG", quality=85)
         jpeg_size = os.path.getsize(jpeg_path)
         jpeg_mb = jpeg_size / (1024 * 1024)

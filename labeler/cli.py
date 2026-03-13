@@ -28,6 +28,7 @@ def _run(args, cfg):
     """One-shot or loop processing."""
     # CLI flags override config
     base_url = args.base_url or cfg["base_url"]
+    api_key = args.api_key or cfg["api_key"]
     model = args.model or cfg["model"]
     limit = args.limit if args.limit is not None else cfg["limit_per_cycle"]
     days = args.days if args.days is not None else cfg["days"]
@@ -68,6 +69,7 @@ def _run(args, cfg):
                 threads=threads, video_frames=video_frames,
                 max_dimension=cfg["max_dimension"], write=write,
                 discover_fn=discover, refresh_interval=1800,
+                api_key=api_key,
             )
         else:
             logger.info("No unprocessed media found.")
@@ -157,6 +159,7 @@ def main():
     run_parser.add_argument("--write", action="store_true", default=None)
     run_parser.add_argument("--dry-run", action="store_true", default=None)
     run_parser.add_argument("--base-url", default=None)
+    run_parser.add_argument("--api-key", default=None)
     run_parser.add_argument("--model", default=None)
     run_parser.add_argument("--threads", type=int, default=None)
     run_parser.add_argument("--video-frames", type=int, default=None)

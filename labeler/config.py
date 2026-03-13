@@ -6,6 +6,7 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 
 DEFAULTS = {
     "base_url": "http://devbox.local:1234/v1",
+    "api_key": "",
     "model": "qwen/qwen3.5-9b",
     "poll_interval": 300,
     "limit_per_cycle": 0,
