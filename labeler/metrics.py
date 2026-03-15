@@ -26,7 +26,7 @@ def init_db():
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS item_metrics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            uuid TEXT NOT NULL,
+            uuid TEXT NOT NULL UNIQUE,
             filename TEXT NOT NULL,
             media_type TEXT NOT NULL,
             is_icloud_only INTEGER NOT NULL DEFAULT 0,
@@ -92,17 +92,25 @@ def record_item(
     has_ocr: bool = False,
     model: str | None = None,
 ):
-    """Record metrics for a single processed item."""
+    """Record metrics for a single processed item (upserts by uuid)."""
     conn = _get_conn()
-    if status == "success":
-        conn.execute("DELETE FROM item_metrics WHERE uuid = ? AND status = 'error'", (uuid,))
     conn.execute(
         """INSERT INTO item_metrics (
             uuid, filename, media_type, is_icloud_only, status, error_message,
             export_duration_s, llm_duration_s, write_duration_s, total_duration_s,
             image_size_bytes, image_width, image_height, num_frames,
             llm_retries, keywords_count, has_ocr, model, timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(uuid) DO UPDATE SET
+            filename=excluded.filename, media_type=excluded.media_type,
+            is_icloud_only=excluded.is_icloud_only, status=excluded.status,
+            error_message=excluded.error_message, export_duration_s=excluded.export_duration_s,
+            llm_duration_s=excluded.llm_duration_s, write_duration_s=excluded.write_duration_s,
+            total_duration_s=excluded.total_duration_s, image_size_bytes=excluded.image_size_bytes,
+            image_width=excluded.image_width, image_height=excluded.image_height,
+            num_frames=excluded.num_frames, llm_retries=excluded.llm_retries,
+            keywords_count=excluded.keywords_count, has_ocr=excluded.has_ocr,
+            model=excluded.model, timestamp=excluded.timestamp""",
         (
             uuid, filename, media_type, int(is_icloud_only), status, error_message,
             export_duration_s, llm_duration_s, write_duration_s, total_duration_s,

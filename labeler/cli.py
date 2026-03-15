@@ -68,7 +68,7 @@ def _run(args, cfg):
                 items, base_url=base_url, model=model,
                 threads=threads, video_frames=video_frames,
                 max_dimension=cfg["max_dimension"], write=write,
-                discover_fn=discover, refresh_interval=1800,
+                discover_fn=discover, refresh_interval=21600,
                 api_key=api_key,
             )
         else:

@@ -46,10 +46,14 @@ def export_photo_as_base64(photo: osxphotos.PhotoInfo, max_dimension: int = 1024
     """Export photo as JPEG and return (base64_string, metadata_dict)."""
     logger.debug(f"Exporting photo (missing={photo.ismissing})...")
     with tempfile.TemporaryDirectory() as tmpdir:
-        exported = photo.export(tmpdir, use_photos_export=True, timeout=120)
-        if not exported:
+        exported = photo.export(tmpdir, use_photos_export=True, timeout=30)
+        if exported:
+            export_path = exported[0]
+        elif photo.path and os.path.exists(photo.path):
+            logger.warning(f"Photos export failed for {photo.uuid}, falling back to original at {photo.path}")
+            export_path = photo.path
+        else:
             raise RuntimeError(f"Failed to export photo {photo.uuid}")
-        export_path = exported[0]
         size_mb = os.path.getsize(export_path) / (1024 * 1024)
         logger.debug(f"Exported {export_path} ({size_mb:.1f} MB)")
 

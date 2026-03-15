@@ -224,7 +224,7 @@ def process_batch(
     max_dimension: int = 1024,
     write: bool = True,
     discover_fn=None,
-    refresh_interval: int = 600,
+    refresh_interval: int = 21600,
     api_key: str = "",
 ):
     """Process a batch of media: photos in parallel, then videos sequentially.
