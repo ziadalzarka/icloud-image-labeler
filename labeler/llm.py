@@ -36,7 +36,7 @@ Respond ONLY with valid JSON in this exact format:
 
 
 def create_client(base_url: str, api_key: str = "") -> OpenAI:
-    return OpenAI(base_url=base_url, api_key=api_key or "not-needed")
+    return OpenAI(base_url=base_url, api_key=api_key or "not-needed", timeout=90.0)
 
 
 def _parse_response(raw: str) -> dict:

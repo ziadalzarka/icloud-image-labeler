@@ -279,9 +279,10 @@ def process_batch(
     # Phase 1: Photos — export on main thread, LLM+write in parallel
     if photos:
         logger.info(f"Processing {len(photos)} photos (up to {threads} threads)...")
-        with ThreadPoolExecutor(max_workers=threads) as pool:
-            in_flight: dict = {}  # future -> PhotoInfo
-            i = 0
+        pool = ThreadPoolExecutor(max_workers=threads)
+        in_flight: dict = {}  # future -> PhotoInfo
+        i = 0
+        try:
             while (i < len(photos) or in_flight) and not is_shutting_down():
                 # Collect completed futures
                 for fut in [f for f in in_flight if f.done()]:
@@ -331,12 +332,17 @@ def process_batch(
                 )
                 in_flight[fut] = p
 
-            # Drain any remaining in-flight futures (shutdown or normal completion)
-            for fut in in_flight:
+            # Drain any remaining in-flight futures
+            if is_shutting_down():
+                for fut in in_flight:
+                    fut.cancel()
+            for fut in list(in_flight):
                 photo = in_flight[fut]
+                if fut.cancelled():
+                    continue
                 processed += 1
                 try:
-                    fut.result()
+                    fut.result(timeout=5)
                     photos_ok += 1
                     logger.info(f"[{processed}/{total}] Done: {photo.original_filename} (added {_format_date(photo)})")
                 except MaxFailuresExceeded:
@@ -344,6 +350,8 @@ def process_batch(
                 except Exception as e:
                     photos_fail += 1
                     logger.error(f"[{processed}/{total}] Failed: {photo.original_filename}: {e}")
+        finally:
+            pool.shutdown(wait=not is_shutting_down(), cancel_futures=is_shutting_down())
 
     if is_shutting_down():
         logger.info("Shutdown requested, stopping batch processing.")
