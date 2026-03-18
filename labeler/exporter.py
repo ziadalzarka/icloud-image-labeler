@@ -53,11 +53,26 @@ def export_photo_as_base64(photo: osxphotos.PhotoInfo, max_dimension: int = 1024
             logger.warning(f"Photos export failed for {photo.uuid}, falling back to original at {photo.path}")
             export_path = photo.path
         else:
-            raise RuntimeError(f"Failed to export photo {photo.uuid}")
-        size_mb = os.path.getsize(export_path) / (1024 * 1024)
-        logger.debug(f"Exported {export_path} ({size_mb:.1f} MB)")
+            export_path = None
 
-        img = _open_image(export_path, tmpdir)
+        # Try to open the export, falling back to derivatives if it fails
+        img = None
+        if export_path:
+            try:
+                size_mb = os.path.getsize(export_path) / (1024 * 1024)
+                logger.debug(f"Exported {export_path} ({size_mb:.1f} MB)")
+                img = _open_image(export_path, tmpdir)
+            except Exception as e:
+                logger.warning(f"Failed to open {export_path}: {e}")
+
+        if img is None:
+            derivatives = photo.path_derivatives
+            if derivatives:
+                export_path = derivatives[0]  # Already sorted largest-first by osxphotos
+                logger.warning(f"Using derivative for {photo.uuid} at {export_path}")
+                img = _open_image(export_path, tmpdir)
+            else:
+                raise RuntimeError(f"Failed to export photo {photo.uuid}: no export, original, or derivative available")
         img = img.convert("RGB")
         img = _resize_if_needed(img, max_dimension)
         jpeg_path = os.path.join(tmpdir, "photo.jpg")
