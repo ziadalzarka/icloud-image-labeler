@@ -62,8 +62,10 @@ def export_photo_as_base64(photo: osxphotos.PhotoInfo, max_dimension: int = 1024
                 size_mb = os.path.getsize(export_path) / (1024 * 1024)
                 logger.debug(f"Exported {export_path} ({size_mb:.1f} MB)")
                 img = _open_image(export_path, tmpdir)
+                img.load()  # Force full read to catch truncated files early
             except Exception as e:
                 logger.warning(f"Failed to open {export_path}: {e}")
+                img = None
 
         if img is None:
             derivatives = photo.path_derivatives
