@@ -72,10 +72,12 @@ Plans:
   3. Magic numbers and strings are replaced with named constants at module level
   4. Helper functions extracted during decomposition have clear, descriptive names
   5. All existing functionality still works identically after restructuring
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 04-01: TBD
+- [ ] 04-01-PLAN.md -- Decompose processor.py process_batch into focused helpers
+- [ ] 04-02-PLAN.md -- Decompose cli.py and exporter.py into focused helpers
+- [ ] 04-03-PLAN.md -- Extract magic constants and remove PLR ignores from ruff config
 
 ### Phase 5: Naming & Documentation
 **Goal**: Every public function and module has clear naming and documentation
@@ -101,5 +103,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 1. Ruff Setup & Formatting | 1/1 | Complete   | 2026-03-19 |
 | 2. Automated Lint Fixes | 1/1 | Complete   | 2026-03-19 |
 | 3. Dead Code Removal | 0/1 | Not started | - |
-| 4. Structure Refactoring | 0/? | Not started | - |
+| 4. Structure Refactoring | 0/3 | Not started | - |
 | 5. Naming & Documentation | 0/? | Not started | - |
