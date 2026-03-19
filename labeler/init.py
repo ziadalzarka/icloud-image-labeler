@@ -1,7 +1,5 @@
 """Interactive first-run setup wizard."""
 
-import json
-import sys
 
 from openai import OpenAI
 
@@ -25,11 +23,11 @@ def _test_connection(base_url: str, api_key: str) -> list[str] | None:
 
 
 def _pick_model(models: list[str]) -> str:
-    print(f"\nAvailable models:")
+    print("\nAvailable models:")
     for i, m in enumerate(models, 1):
         print(f"  {i}. {m}")
     while True:
-        choice = input(f"\nSelect model [1]: ").strip()
+        choice = input("\nSelect model [1]: ").strip()
         if not choice:
             return models[0]
         try:
@@ -85,5 +83,5 @@ def run_init():
     print(f"\nConfig saved to {CONFIG_PATH}")
     print(f"\n  base_url: {base_url}")
     print(f"  model:    {model}")
-    print(f"\nRun 'icloud-image-labeler run' to start labeling.")
+    print("\nRun 'icloud-image-labeler run' to start labeling.")
     print("Run 'icloud-image-labeler config show' to see all settings.")

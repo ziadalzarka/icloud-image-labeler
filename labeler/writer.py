@@ -23,7 +23,7 @@ def _ensure_photos_app():
 def write_metadata(photo_uuid: str, labels: dict, write: bool = True):
     """Write keywords, title, and description to Photos.app."""
     if not write:
-        logger.info(f"[DRY RUN] Would write:")
+        logger.info("[DRY RUN] Would write:")
         logger.info(f"  Title: {labels.get('title', '')}")
         logger.info(f"  Description: {labels.get('description', '')}")
         logger.info(f"  Keywords: {', '.join(labels.get('keywords', []))}")
@@ -38,7 +38,7 @@ def write_metadata(photo_uuid: str, labels: dict, write: bool = True):
         keywords.append(f"ocr:{labels['ocr_text']}")
 
     with _write_lock:
-        logger.debug(f"Writing metadata to Photos.app...")
+        logger.debug("Writing metadata to Photos.app...")
         photo = photoscript.Photo(photo_uuid)
         photo.keywords = keywords
         photo.title = labels.get("title", "")

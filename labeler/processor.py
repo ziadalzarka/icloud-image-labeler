@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 MAX_ITEM_FAILURES = 10
 RETRY_BASE_DELAY = 5  # seconds
 RETRY_MAX_DELAY = 300  # seconds
+_HTTP_SERVER_ERROR = 500
+_HTTP_BAD_REQUEST = 400
 
 
 class MaxFailuresExceeded(RuntimeError):
@@ -31,10 +33,10 @@ def _is_retryable_error(exc: Exception) -> bool:
     ):
         return True
     if isinstance(exc, APIStatusError):
-        if exc.status_code >= 500:
+        if exc.status_code >= _HTTP_SERVER_ERROR:
             return True
         # LM Studio model crash returns 400 with "crashed" in the message
-        if exc.status_code == 400 and "crashed" in str(exc).lower():
+        if exc.status_code == _HTTP_BAD_REQUEST and "crashed" in str(exc).lower():
             return True
     return False
 

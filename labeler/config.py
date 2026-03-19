@@ -29,7 +29,7 @@ def ensure_config() -> dict:
     if not CONFIG_PATH.exists():
         CONFIG_PATH.write_text(json.dumps(DEFAULTS, indent=2) + "\n")
         return dict(DEFAULTS)
-    with open(CONFIG_PATH) as f:
+    with CONFIG_PATH.open() as f:
         config = json.load(f)
     return {**DEFAULTS, **config}
 

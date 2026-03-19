@@ -1,12 +1,12 @@
 import logging
-import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.path.expanduser("~/.image-labeler/metrics.db")
+DB_PATH = str(Path.home() / ".image-labeler" / "metrics.db")
 
 _local = threading.local()
 
@@ -14,7 +14,7 @@ _local = threading.local()
 def _get_conn() -> sqlite3.Connection:
     """Get a thread-local database connection."""
     if not hasattr(_local, "conn") or _local.conn is None:
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
         _local.conn = sqlite3.connect(DB_PATH)
         _local.conn.execute("PRAGMA journal_mode=WAL")
     return _local.conn

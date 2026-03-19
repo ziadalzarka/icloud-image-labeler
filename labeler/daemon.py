@@ -1,5 +1,4 @@
 import logging
-import os
 import plistlib
 import subprocess
 import sys
@@ -20,7 +19,7 @@ def _get_python_path() -> str:
 
 def _get_labeler_module_path() -> str:
     """Get the path to run `python -m labeler`."""
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return str(Path(__file__).resolve().parent.parent)
 
 
 def _generate_plist() -> dict:
@@ -54,7 +53,7 @@ def start():
     PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     plist = _generate_plist()
-    with open(PLIST_PATH, "wb") as f:
+    with PLIST_PATH.open("wb") as f:
         plistlib.dump(plist, f)
 
     subprocess.run(["launchctl", "load", str(PLIST_PATH)], check=True)

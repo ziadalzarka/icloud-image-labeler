@@ -1,8 +1,8 @@
 import base64
 import logging
-import os
 import subprocess
 import tempfile
+from pathlib import Path
 
 import osxphotos
 
@@ -33,15 +33,15 @@ def _open_image(path: str, tmpdir: str):
         return Image.open(path)
     except Exception:
         logger.debug(f"PIL cannot open {path}, converting via sips...")
-        sips_jpg = os.path.join(tmpdir, "sips_converted.jpg")
+        sips_jpg = str(Path(tmpdir) / "sips_converted.jpg")
         result = subprocess.run(
             ["sips", "-s", "format", "jpeg", path, "--out", sips_jpg],
             capture_output=True,
             text=True,
         )
-        if result.returncode != 0 or not os.path.exists(sips_jpg):
+        if result.returncode != 0 or not Path(sips_jpg).exists():
             raise RuntimeError(
-                f"sips conversion failed for {os.path.basename(path)}: "
+                f"sips conversion failed for {Path(path).name}: "
                 f"{result.stderr.strip()}"
             ) from None
         return Image.open(sips_jpg)
@@ -56,7 +56,7 @@ def export_photo_as_base64(
         exported = photo.export(tmpdir, use_photos_export=True, timeout=30)
         if exported:
             export_path = exported[0]
-        elif photo.path and os.path.exists(photo.path):
+        elif photo.path and Path(photo.path).exists():
             logger.warning(
                 f"Photos export failed for {photo.uuid}, falling back to original at {photo.path}"
             )
@@ -68,7 +68,7 @@ def export_photo_as_base64(
         img = None
         if export_path:
             try:
-                size_mb = os.path.getsize(export_path) / (1024 * 1024)
+                size_mb = Path(export_path).stat().st_size / (1024 * 1024)
                 logger.debug(f"Exported {export_path} ({size_mb:.1f} MB)")
                 img = _open_image(export_path, tmpdir)
                 img.load()  # Force full read to catch truncated files early
@@ -90,13 +90,13 @@ def export_photo_as_base64(
                 )
         img = img.convert("RGB")
         img = _resize_if_needed(img, max_dimension)
-        jpeg_path = os.path.join(tmpdir, "photo.jpg")
+        jpeg_path = str(Path(tmpdir) / "photo.jpg")
         img.save(jpeg_path, "JPEG", quality=85)
-        jpeg_size = os.path.getsize(jpeg_path)
+        jpeg_size = Path(jpeg_path).stat().st_size
         jpeg_mb = jpeg_size / (1024 * 1024)
         logger.debug(f"JPEG: {img.size[0]}x{img.size[1]} ({jpeg_mb:.1f} MB)")
 
-        with open(jpeg_path, "rb") as f:
+        with Path(jpeg_path).open("rb") as f:
             b64 = base64.standard_b64encode(f.read()).decode("utf-8")
         logger.debug(f"Base64 encoded ({len(b64)} chars)")
         meta = {
@@ -117,7 +117,7 @@ def export_video_frames_as_base64(
         if not exported:
             raise RuntimeError(f"Failed to export video {photo.uuid}")
         video_path = exported[0]
-        size_mb = os.path.getsize(video_path) / (1024 * 1024)
+        size_mb = Path(video_path).stat().st_size / (1024 * 1024)
         logger.debug(f"Exported {video_path} ({size_mb:.1f} MB)")
 
         # Get duration
@@ -155,7 +155,7 @@ def export_video_frames_as_base64(
         frame_height = None
         for i in range(num_frames):
             timestamp = duration * (i + 0.5) / num_frames
-            frame_path = os.path.join(tmpdir, f"frame_{i:02d}.jpg")
+            frame_path = str(Path(tmpdir) / f"frame_{i:02d}.jpg")
             logger.debug(
                 f"Extracting frame {i + 1}/{num_frames} at {timestamp:.1f}s..."
             )
@@ -178,15 +178,15 @@ def export_video_frames_as_base64(
                 ],
                 capture_output=True,
             )
-            if os.path.exists(frame_path):
-                frame_size = os.path.getsize(frame_path)
+            if Path(frame_path).exists():
+                frame_size = Path(frame_path).stat().st_size
                 total_frame_bytes += frame_size
                 if frame_width is None:
                     from PIL import Image
 
                     with Image.open(frame_path) as img:
                         frame_width, frame_height = img.size
-                with open(frame_path, "rb") as f:
+                with Path(frame_path).open("rb") as f:
                     frames.append(base64.standard_b64encode(f.read()).decode("utf-8"))
             else:
                 logger.warning(f"Failed to extract frame {i + 1}")
