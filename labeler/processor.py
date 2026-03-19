@@ -3,6 +3,7 @@ import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 
 import osxphotos
 from openai import APIConnectionError, APIStatusError, APITimeoutError
@@ -253,6 +254,75 @@ def _process_video_with_retry(
             raise
 
 
+# --- Batch state and helpers ------------------------------------------------
+
+
+@dataclass
+class _BatchState:
+    """Mutable state for a batch processing run."""
+
+    photos: list = field(default_factory=list)
+    videos: list = field(default_factory=list)
+    seen_uuids: set = field(default_factory=set)
+    total: int = 0
+    processed: int = 0
+    photos_ok: int = 0
+    photos_fail: int = 0
+    videos_ok: int = 0
+    videos_fail: int = 0
+    last_refresh: float = 0.0
+
+
+def _init_batch(items: list[osxphotos.PhotoInfo]) -> _BatchState:
+    """Split items into photos/videos and create initial batch state."""
+    photos = [p for p in items if p.isphoto]
+    videos = [p for p in items if not p.isphoto]
+    seen_uuids = {p.uuid for p in items}
+    return _BatchState(
+        photos=photos,
+        videos=videos,
+        seen_uuids=seen_uuids,
+        total=len(items),
+    )
+
+
+def _maybe_refresh(
+    state: _BatchState,
+    discover_fn,
+    refresh_interval: int,
+    photo_insert_idx: int = 0,
+    video_insert_idx: int = 0,
+) -> None:
+    """Re-query for new items if refresh interval has elapsed."""
+    if discover_fn is None:
+        return
+    if time.monotonic() - state.last_refresh < refresh_interval:
+        return
+    state.last_refresh = time.monotonic()
+    logger.info("Refreshing media list...")
+    try:
+        fresh = discover_fn()
+    except Exception as e:
+        logger.warning(f"Refresh failed: {e}")
+        return
+    new_items = [p for p in fresh if p.uuid not in state.seen_uuids]
+    if not new_items:
+        logger.info(f"Refresh complete: no new items ({len(fresh)} returned, all seen)")
+        return
+    for p in new_items:
+        state.seen_uuids.add(p.uuid)
+    new_photos = [p for p in new_items if p.isphoto]
+    new_videos = [p for p in new_items if not p.isphoto]
+    state.photos[photo_insert_idx:photo_insert_idx] = new_photos
+    state.videos[video_insert_idx:video_insert_idx] = new_videos
+    state.total += len(new_items)
+    logger.info(
+        f"Added {len(new_items)} new items "
+        f"({len(new_photos)} photos, "
+        f"{len(new_videos)} videos), total now {state.total}"
+    )
+
+
 # --- Batch orchestration ---------------------------------------------------
 
 
@@ -276,99 +346,69 @@ def process_batch(
     If discover_fn is provided, the main thread will call it every
     refresh_interval seconds to pick up newly added items.
     """
-    photos = [p for p in items if p.isphoto]
-    videos = [p for p in items if not p.isphoto]
-    seen_uuids = {p.uuid for p in items}
+    state = _init_batch(items)
     tracker = ItemFailureTracker()
-    total = len(items)
-    processed = 0
 
     run_id = metrics.start_run(
         model=model,
         threads=threads,
         dry_run=not write,
-        photos_found=len(photos),
-        videos_found=len(videos),
+        photos_found=len(state.photos),
+        videos_found=len(state.videos),
     )
-    photos_ok = photos_fail = videos_ok = videos_fail = 0
-    last_refresh = time.monotonic()
-
-    def _maybe_refresh(photo_insert_idx: int = 0, video_insert_idx: int = 0):
-        """Re-query for new items if refresh interval has elapsed."""
-        nonlocal last_refresh, total
-        if discover_fn is None:
-            return
-        if time.monotonic() - last_refresh < refresh_interval:
-            return
-        last_refresh = time.monotonic()
-        logger.info("Refreshing media list...")
-        try:
-            fresh = discover_fn()
-        except Exception as e:
-            logger.warning(f"Refresh failed: {e}")
-            return
-        new_items = [p for p in fresh if p.uuid not in seen_uuids]
-        if not new_items:
-            logger.info(
-                f"Refresh complete: no new items ({len(fresh)} returned, all seen)"
-            )
-            return
-        for p in new_items:
-            seen_uuids.add(p.uuid)
-        new_photos = [p for p in new_items if p.isphoto]
-        new_videos = [p for p in new_items if not p.isphoto]
-        photos[photo_insert_idx:photo_insert_idx] = new_photos
-        videos[video_insert_idx:video_insert_idx] = new_videos
-        total += len(new_items)
-        logger.info(
-            f"Added {len(new_items)} new items "
-            f"({len(new_photos)} photos, "
-            f"{len(new_videos)} videos), total now {total}"
-        )
+    state.last_refresh = time.monotonic()
 
     # Phase 1: Photos — export on main thread, LLM+write in parallel
-    if photos:
-        logger.info(f"Processing {len(photos)} photos (up to {threads} threads)...")
+    if state.photos:
+        logger.info(
+            f"Processing {len(state.photos)} photos (up to {threads} threads)..."
+        )
         pool = ThreadPoolExecutor(max_workers=threads)
         in_flight: dict = {}  # future -> PhotoInfo
         i = 0
         try:
-            while (i < len(photos) or in_flight) and not is_shutting_down():
+            while (i < len(state.photos) or in_flight) and not is_shutting_down():
                 # Collect completed futures
                 for fut in [f for f in in_flight if f.done()]:
                     photo = in_flight.pop(fut)
-                    processed += 1
+                    state.processed += 1
                     try:
                         fut.result()
-                        photos_ok += 1
+                        state.photos_ok += 1
                         logger.info(
-                            f"[{processed}/{total}] Done: "
+                            f"[{state.processed}/{state.total}] Done: "
                             f"{photo.original_filename} "
                             f"(added {_format_date(photo)})"
                         )
                     except MaxFailuresExceeded:
                         raise
                     except Exception as e:
-                        photos_fail += 1
+                        state.photos_fail += 1
                         logger.error(
-                            f"[{processed}/{total}] Failed: "
+                            f"[{state.processed}/{state.total}] Failed: "
                             f"{photo.original_filename}: {e}"
                         )
 
                 # Backpressure: wait if all worker slots are busy
-                if i < len(photos) and len(in_flight) >= threads:
+                if i < len(state.photos) and len(in_flight) >= threads:
                     time.sleep(0.1)
                     continue
 
                 # Drain remaining futures
-                if i >= len(photos):
+                if i >= len(state.photos):
                     time.sleep(0.1)
                     continue
 
-                p = photos[i]
+                p = state.photos[i]
                 i += 1
 
-                _maybe_refresh(photo_insert_idx=i, video_insert_idx=0)
+                _maybe_refresh(
+                    state,
+                    discover_fn,
+                    refresh_interval,
+                    photo_insert_idx=i,
+                    video_insert_idx=0,
+                )
 
                 # Export on main thread (osxphotos SQLite is thread-bound)
                 try:
@@ -378,11 +418,11 @@ def process_batch(
                     )
                     export_duration = time.monotonic() - t_export
                 except Exception as e:
-                    processed += 1
-                    photos_fail += 1
+                    state.processed += 1
+                    state.photos_fail += 1
                     _record_error(p, "photo", model, e)
                     logger.error(
-                        f"[{processed}/{total}] Export failed: "
+                        f"[{state.processed}/{state.total}] Export failed: "
                         f"{p.original_filename}: {e}"
                     )
                     tracker.record_failure(p.uuid, p.original_filename)
@@ -410,21 +450,22 @@ def process_batch(
                 photo = in_flight[fut]
                 if fut.cancelled():
                     continue
-                processed += 1
+                state.processed += 1
                 try:
                     fut.result(timeout=5)
-                    photos_ok += 1
+                    state.photos_ok += 1
                     logger.info(
-                        f"[{processed}/{total}] Done: "
+                        f"[{state.processed}/{state.total}] Done: "
                         f"{photo.original_filename} "
                         f"(added {_format_date(photo)})"
                     )
                 except MaxFailuresExceeded:
                     raise
                 except Exception as e:
-                    photos_fail += 1
+                    state.photos_fail += 1
                     logger.error(
-                        f"[{processed}/{total}] Failed: {photo.original_filename}: {e}"
+                        f"[{state.processed}/{state.total}] Failed: "
+                        f"{photo.original_filename}: {e}"
                     )
         finally:
             pool.shutdown(
@@ -435,15 +476,21 @@ def process_batch(
         logger.info("Shutdown requested, stopping batch processing.")
 
     # Phase 2: Videos sequentially (on main thread)
-    if videos:
-        logger.info(f"Processing {len(videos)} videos sequentially...")
+    if state.videos:
+        logger.info(f"Processing {len(state.videos)} videos sequentially...")
         i = 0
-        while i < len(videos) and not is_shutting_down():
-            video = videos[i]
+        while i < len(state.videos) and not is_shutting_down():
+            video = state.videos[i]
             i += 1
-            processed += 1
+            state.processed += 1
 
-            _maybe_refresh(photo_insert_idx=len(photos), video_insert_idx=i)
+            _maybe_refresh(
+                state,
+                discover_fn,
+                refresh_interval,
+                photo_insert_idx=len(state.photos),
+                video_insert_idx=i,
+            )
 
             try:
                 _process_video_with_retry(
@@ -456,24 +503,25 @@ def process_batch(
                     tracker,
                     api_key,
                 )
-                videos_ok += 1
+                state.videos_ok += 1
                 logger.info(
-                    f"[{processed}/{total}] Done: "
+                    f"[{state.processed}/{state.total}] Done: "
                     f"{video.original_filename} "
                     f"(added {_format_date(video)})"
                 )
             except MaxFailuresExceeded:
                 raise
             except Exception as e:
-                videos_fail += 1
+                state.videos_fail += 1
                 logger.error(
-                    f"[{processed}/{total}] Failed: {video.original_filename}: {e}"
+                    f"[{state.processed}/{state.total}] Failed: "
+                    f"{video.original_filename}: {e}"
                 )
 
     metrics.finish_run(
         run_id=run_id,
-        photos_processed=photos_ok,
-        videos_processed=videos_ok,
-        photos_failed=photos_fail,
-        videos_failed=videos_fail,
+        photos_processed=state.photos_ok,
+        videos_processed=state.videos_ok,
+        photos_failed=state.photos_fail,
+        videos_failed=state.videos_fail,
     )
