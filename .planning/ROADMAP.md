@@ -12,7 +12,7 @@ This roadmap takes the codebase from its current organic state to a clean, consi
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Ruff Setup & Formatting** - Configure Ruff in pyproject.toml and format all modules consistently
+- [x] **Phase 1: Ruff Setup & Formatting** - Configure Ruff in pyproject.toml and format all modules consistently (completed 2026-03-19)
 - [ ] **Phase 2: Automated Lint Fixes** - Run auto-fixable lint rules and expanded rule sets across all modules
 - [ ] **Phase 3: Dead Code Removal** - Manually remove unused functions, variables, and commented-out code blocks
 - [ ] **Phase 4: Structure Refactoring** - Decompose long functions, flatten nesting, and extract constants
@@ -98,7 +98,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Ruff Setup & Formatting | 0/1 | Not started | - |
+| 1. Ruff Setup & Formatting | 1/1 | Complete   | 2026-03-19 |
 | 2. Automated Lint Fixes | 0/? | Not started | - |
 | 3. Dead Code Removal | 0/? | Not started | - |
 | 4. Structure Refactoring | 0/? | Not started | - |

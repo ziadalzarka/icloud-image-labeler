@@ -9,11 +9,11 @@ Requirements for code quality initiative. Each maps to roadmap phases.
 
 ### Tooling
 
-- [ ] **TOOL-01**: Ruff configuration added to pyproject.toml with target version py310, line length, and selected rule sets
-- [ ] **TOOL-02**: All modules formatted consistently via `ruff format`
+- [x] **TOOL-01**: Ruff configuration added to pyproject.toml with target version py310, line length, and selected rule sets
+- [x] **TOOL-02**: All modules formatted consistently via `ruff format`
 - [ ] **TOOL-03**: All auto-fixable lint violations resolved via `ruff check --fix`
 - [ ] **TOOL-04**: All remaining lint violations that require human judgment resolved manually
-- [ ] **TOOL-05**: Imports sorted consistently across all modules via Ruff isort rules
+- [x] **TOOL-05**: Imports sorted consistently across all modules via Ruff isort rules
 - [ ] **TOOL-06**: Expanded rule sets enabled (SIM, C4, PTH, RET, PLR) and violations resolved
 
 ### Dead Code
@@ -71,11 +71,11 @@ Deferred to future release. Tracked but not in current roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| TOOL-01 | Phase 1 | Pending |
-| TOOL-02 | Phase 1 | Pending |
+| TOOL-01 | Phase 1 | Complete |
+| TOOL-02 | Phase 1 | Complete |
 | TOOL-03 | Phase 2 | Pending |
 | TOOL-04 | Phase 3 | Pending |
-| TOOL-05 | Phase 1 | Pending |
+| TOOL-05 | Phase 1 | Complete |
 | TOOL-06 | Phase 2 | Pending |
 | DEAD-01 | Phase 2 | Pending |
 | DEAD-02 | Phase 3 | Pending |
