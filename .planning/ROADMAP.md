@@ -57,10 +57,10 @@ Plans:
   2. No unused functions or variables exist in any module
   3. No commented-out code blocks remain in any module
   4. All existing functionality still works identically after removals
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 03-01: TBD
+- [ ] 03-01-PLAN.md -- Fix E501 line-length violations and verify dead code removal
 
 ### Phase 4: Structure Refactoring
 **Goal**: All modules have short, focused functions with flat control flow and named constants
@@ -100,6 +100,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 |-------|----------------|--------|-----------|
 | 1. Ruff Setup & Formatting | 1/1 | Complete   | 2026-03-19 |
 | 2. Automated Lint Fixes | 1/1 | Complete   | 2026-03-19 |
-| 3. Dead Code Removal | 0/? | Not started | - |
+| 3. Dead Code Removal | 0/1 | Not started | - |
 | 4. Structure Refactoring | 0/? | Not started | - |
 | 5. Naming & Documentation | 0/? | Not started | - |
