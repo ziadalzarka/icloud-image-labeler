@@ -1,4 +1,4 @@
-# Requirements: iCloud Image Labeler — Code Quality
+# Requirements: iCloud Image Labeler -- Code Quality
 
 **Defined:** 2026-03-19
 **Core Value:** Clean, consistent, professional codebase that's easy to read and maintain
@@ -53,7 +53,7 @@ Deferred to future release. Tracked but not in current roadmap.
 
 ### Additional Cleanup
 
-- **CLNP-01**: Module-level organization pattern (imports → constants → classes → public → private)
+- **CLNP-01**: Module-level organization pattern (imports -> constants -> classes -> public -> private)
 - **CLNP-02**: Error message consistency across all modules
 - **CLNP-03**: Type annotations on public function signatures
 
@@ -71,32 +71,32 @@ Deferred to future release. Tracked but not in current roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| TOOL-01 | — | Pending |
-| TOOL-02 | — | Pending |
-| TOOL-03 | — | Pending |
-| TOOL-04 | — | Pending |
-| TOOL-05 | — | Pending |
-| TOOL-06 | — | Pending |
-| DEAD-01 | — | Pending |
-| DEAD-02 | — | Pending |
-| DEAD-03 | — | Pending |
-| STRC-01 | — | Pending |
-| STRC-02 | — | Pending |
-| STRC-03 | — | Pending |
-| STRC-04 | — | Pending |
-| STRC-05 | — | Pending |
-| STRC-06 | — | Pending |
-| NAME-01 | — | Pending |
-| NAME-02 | — | Pending |
-| NAME-03 | — | Pending |
-| DOCS-01 | — | Pending |
-| DOCS-02 | — | Pending |
+| TOOL-01 | Phase 1 | Pending |
+| TOOL-02 | Phase 1 | Pending |
+| TOOL-03 | Phase 2 | Pending |
+| TOOL-04 | Phase 3 | Pending |
+| TOOL-05 | Phase 1 | Pending |
+| TOOL-06 | Phase 2 | Pending |
+| DEAD-01 | Phase 2 | Pending |
+| DEAD-02 | Phase 3 | Pending |
+| DEAD-03 | Phase 3 | Pending |
+| STRC-01 | Phase 4 | Pending |
+| STRC-02 | Phase 4 | Pending |
+| STRC-03 | Phase 4 | Pending |
+| STRC-04 | Phase 4 | Pending |
+| STRC-05 | Phase 4 | Pending |
+| STRC-06 | Phase 4 | Pending |
+| NAME-01 | Phase 5 | Pending |
+| NAME-02 | Phase 5 | Pending |
+| NAME-03 | Phase 5 | Pending |
+| DOCS-01 | Phase 5 | Pending |
+| DOCS-02 | Phase 5 | Pending |
 
 **Coverage:**
 - v1 requirements: 20 total
-- Mapped to phases: 0
-- Unmapped: 20 ⚠️
+- Mapped to phases: 20
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-19*
-*Last updated: 2026-03-19 after initial definition*
+*Last updated: 2026-03-19 after roadmap creation*
