@@ -1,0 +1,51 @@
+name: Update Homebrew Formula
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get release info
+        id: release
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Compute tarball SHA256
+        id: sha
+        run: |
+          URL="https://github.com/${{ github.repository }}/archive/refs/tags/${{ steps.release.outputs.tag }}.tar.gz"
+          SHA=$(curl -sL "$URL" | sha256sum | cut -d' ' -f1)
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ steps.release.outputs.version }}"
+          TAG="${{ steps.release.outputs.tag }}"
+          SHA="${{ steps.sha.outputs.sha256 }}"
+
+          # Fetch current formula
+          RESPONSE=$(gh api repos/${{ github.repository_owner }}/homebrew-tap/contents/Formula/icloud-image-labeler.rb)
+          FILE_SHA=$(echo "$RESPONSE" | jq -r '.sha')
+          CONTENT=$(echo "$RESPONSE" | jq -r '.content' | base64 -d)
+
+          # Update url, sha256, and version in test
+          UPDATED=$(echo "$CONTENT" \
+            | sed "s|url \".*\"|url \"https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz\"|" \
+            | sed "s|sha256 \".*\"|sha256 \"${SHA}\"|" \
+            | sed "s|icloud-image-labeler [0-9.]*|icloud-image-labeler ${VERSION}|")
+
+          # Push update
+          echo "$UPDATED" | base64 -w0 | jq -Rs \
+            --arg sha "$FILE_SHA" \
+            --arg msg "bump icloud-image-labeler to ${TAG}" \
+            '{message: $msg, content: ., sha: $sha}' \
+            | gh api repos/${{ github.repository_owner }}/homebrew-tap/contents/Formula/icloud-image-labeler.rb \
+              -X PUT --input -
