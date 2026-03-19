@@ -12,15 +12,15 @@ Requirements for code quality initiative. Each maps to roadmap phases.
 - [x] **TOOL-01**: Ruff configuration added to pyproject.toml with target version py310, line length, and selected rule sets
 - [x] **TOOL-02**: All modules formatted consistently via `ruff format`
 - [x] **TOOL-03**: All auto-fixable lint violations resolved via `ruff check --fix`
-- [ ] **TOOL-04**: All remaining lint violations that require human judgment resolved manually
+- [x] **TOOL-04**: All remaining lint violations that require human judgment resolved manually
 - [x] **TOOL-05**: Imports sorted consistently across all modules via Ruff isort rules
 - [x] **TOOL-06**: Expanded rule sets enabled (SIM, C4, PTH, RET, PLR) and violations resolved
 
 ### Dead Code
 
 - [x] **DEAD-01**: All unused imports removed across all modules
-- [ ] **DEAD-02**: All unused functions and variables removed
-- [ ] **DEAD-03**: All commented-out code blocks removed
+- [x] **DEAD-02**: All unused functions and variables removed
+- [x] **DEAD-03**: All commented-out code blocks removed
 
 ### Structure
 
@@ -74,12 +74,12 @@ Deferred to future release. Tracked but not in current roadmap.
 | TOOL-01 | Phase 1 | Complete |
 | TOOL-02 | Phase 1 | Complete |
 | TOOL-03 | Phase 2 | Complete |
-| TOOL-04 | Phase 3 | Pending |
+| TOOL-04 | Phase 3 | Complete |
 | TOOL-05 | Phase 1 | Complete |
 | TOOL-06 | Phase 2 | Complete |
 | DEAD-01 | Phase 2 | Complete |
-| DEAD-02 | Phase 3 | Pending |
-| DEAD-03 | Phase 3 | Pending |
+| DEAD-02 | Phase 3 | Complete |
+| DEAD-03 | Phase 3 | Complete |
 | STRC-01 | Phase 4 | Pending |
 | STRC-02 | Phase 4 | Pending |
 | STRC-03 | Phase 4 | Pending |
