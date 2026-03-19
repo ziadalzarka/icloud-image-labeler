@@ -12,8 +12,14 @@ _shutdown_event = threading.Event()
 def request_shutdown(signum=None, frame=None):
     """Signal handler that sets the shutdown flag."""
     name = signal.Signals(signum).name if signum else "unknown"
+    if _shutdown_event.is_set():
+        # Second signal — exit immediately
+        logger.info(f"Received {name} again, forcing exit...")
+        raise SystemExit(1)
     logger.info(f"Received {name}, shutting down gracefully...")
     _shutdown_event.set()
+    # Raise KeyboardInterrupt so blocking calls (input, library loading) unblock
+    raise KeyboardInterrupt
 
 
 def is_shutting_down() -> bool:
