@@ -6,8 +6,10 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-PHOTO_SYSTEM_PROMPT = """You are a photo labeling assistant. Given a photo, generate:
-1. **keywords**: A list of descriptive keywords/tags (objects, scenes, activities, colors, mood). 10-20 keywords.
+PHOTO_SYSTEM_PROMPT = """\
+You are a photo labeling assistant. Given a photo, generate:
+1. **keywords**: A list of descriptive keywords/tags
+   (objects, scenes, activities, colors, mood). 10-20 keywords.
 2. **title**: A short descriptive title (5-10 words).
 3. **description**: A one-sentence description of the photo.
 4. **ocr_text**: Any visible text in the photo (empty string if none).
@@ -20,8 +22,12 @@ Respond ONLY with valid JSON in this exact format:
   "ocr_text": "any visible text"
 }"""
 
-VIDEO_SYSTEM_PROMPT = """You are a video labeling assistant. You will be given frames extracted at equal intervals from a video. Analyze all frames together to understand the video content, then generate:
-1. **keywords**: A list of descriptive keywords/tags (objects, scenes, activities, colors, mood, actions). 10-20 keywords.
+VIDEO_SYSTEM_PROMPT = """\
+You are a video labeling assistant. You will be given frames \
+extracted at equal intervals from a video. Analyze all frames \
+together to understand the video content, then generate:
+1. **keywords**: A list of descriptive keywords/tags
+   (objects, scenes, activities, colors, mood, actions). 10-20 keywords.
 2. **title**: A short descriptive title (5-10 words).
 3. **description**: A one-sentence description of what happens in the video.
 4. **ocr_text**: Any visible text in the video frames (empty string if none).
@@ -114,7 +120,11 @@ def label_video(
     image_content = [
         {
             "type": "text",
-            "text": f"These are {len(frames_b64)} frames extracted at equal intervals from a video. Label this video:",
+            "text": (
+                f"These are {len(frames_b64)} frames extracted"
+                f" at equal intervals from a video."
+                f" Label this video:"
+            ),
         }
     ]
     for frame_b64 in frames_b64:

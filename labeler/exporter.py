@@ -10,7 +10,10 @@ logger = logging.getLogger(__name__)
 
 
 def _resize_if_needed(img, max_dim: int):
-    """Resize image so the longest side is at most max_dim pixels, maintaining aspect ratio."""
+    """Resize image so the longest side is at most max_dim pixels.
+
+    Maintains aspect ratio.
+    """
     w, h = img.size
     if max(w, h) <= max_dim:
         return img
@@ -58,7 +61,8 @@ def export_photo_as_base64(
             export_path = exported[0]
         elif photo.path and Path(photo.path).exists():
             logger.warning(
-                f"Photos export failed for {photo.uuid}, falling back to original at {photo.path}"
+                f"Photos export failed for {photo.uuid}, "
+                f"falling back to original at {photo.path}"
             )
             export_path = photo.path
         else:
@@ -86,7 +90,8 @@ def export_photo_as_base64(
                 img = _open_image(export_path, tmpdir)
             else:
                 raise RuntimeError(
-                    f"Failed to export photo {photo.uuid}: no export, original, or derivative available"
+                    f"Failed to export photo {photo.uuid}: "
+                    f"no export, original, or derivative available"
                 )
         img = img.convert("RGB")
         img = _resize_if_needed(img, max_dimension)
@@ -110,7 +115,10 @@ def export_photo_as_base64(
 def export_video_frames_as_base64(
     photo: osxphotos.PhotoInfo, num_frames: int = 5, max_dimension: int = 1024
 ) -> tuple[list[str], dict]:
-    """Export video, extract frames at equal intervals, return (base64_list, metadata_dict)."""
+    """Export video, extract frames at equal intervals.
+
+    Returns (base64_list, metadata_dict).
+    """
     logger.debug(f"Exporting video (missing={photo.ismissing})...")
     with tempfile.TemporaryDirectory() as tmpdir:
         exported = photo.export(tmpdir, use_photos_export=True, timeout=300)

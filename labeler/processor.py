@@ -321,7 +321,9 @@ def process_batch(
         videos[video_insert_idx:video_insert_idx] = new_videos
         total += len(new_items)
         logger.info(
-            f"Added {len(new_items)} new items ({len(new_photos)} photos, {len(new_videos)} videos), total now {total}"
+            f"Added {len(new_items)} new items "
+            f"({len(new_photos)} photos, "
+            f"{len(new_videos)} videos), total now {total}"
         )
 
     # Phase 1: Photos — export on main thread, LLM+write in parallel
@@ -340,14 +342,17 @@ def process_batch(
                         fut.result()
                         photos_ok += 1
                         logger.info(
-                            f"[{processed}/{total}] Done: {photo.original_filename} (added {_format_date(photo)})"
+                            f"[{processed}/{total}] Done: "
+                            f"{photo.original_filename} "
+                            f"(added {_format_date(photo)})"
                         )
                     except MaxFailuresExceeded:
                         raise
                     except Exception as e:
                         photos_fail += 1
                         logger.error(
-                            f"[{processed}/{total}] Failed: {photo.original_filename}: {e}"
+                            f"[{processed}/{total}] Failed: "
+                            f"{photo.original_filename}: {e}"
                         )
 
                 # Backpressure: wait if all worker slots are busy
@@ -377,7 +382,8 @@ def process_batch(
                     photos_fail += 1
                     _record_error(p, "photo", model, e)
                     logger.error(
-                        f"[{processed}/{total}] Export failed: {p.original_filename}: {e}"
+                        f"[{processed}/{total}] Export failed: "
+                        f"{p.original_filename}: {e}"
                     )
                     tracker.record_failure(p.uuid, p.original_filename)
                     continue
@@ -409,7 +415,9 @@ def process_batch(
                     fut.result(timeout=5)
                     photos_ok += 1
                     logger.info(
-                        f"[{processed}/{total}] Done: {photo.original_filename} (added {_format_date(photo)})"
+                        f"[{processed}/{total}] Done: "
+                        f"{photo.original_filename} "
+                        f"(added {_format_date(photo)})"
                     )
                 except MaxFailuresExceeded:
                     raise
@@ -450,7 +458,9 @@ def process_batch(
                 )
                 videos_ok += 1
                 logger.info(
-                    f"[{processed}/{total}] Done: {video.original_filename} (added {_format_date(video)})"
+                    f"[{processed}/{total}] Done: "
+                    f"{video.original_filename} "
+                    f"(added {_format_date(video)})"
                 )
             except MaxFailuresExceeded:
                 raise

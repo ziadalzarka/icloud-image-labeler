@@ -102,15 +102,24 @@ def record_item(
             llm_retries, keywords_count, has_ocr, model, timestamp
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(uuid) DO UPDATE SET
-            filename=excluded.filename, media_type=excluded.media_type,
-            is_icloud_only=excluded.is_icloud_only, status=excluded.status,
-            error_message=excluded.error_message, export_duration_s=excluded.export_duration_s,
-            llm_duration_s=excluded.llm_duration_s, write_duration_s=excluded.write_duration_s,
-            total_duration_s=excluded.total_duration_s, image_size_bytes=excluded.image_size_bytes,
-            image_width=excluded.image_width, image_height=excluded.image_height,
-            num_frames=excluded.num_frames, llm_retries=excluded.llm_retries,
-            keywords_count=excluded.keywords_count, has_ocr=excluded.has_ocr,
-            model=excluded.model, timestamp=excluded.timestamp""",
+            filename=excluded.filename,
+            media_type=excluded.media_type,
+            is_icloud_only=excluded.is_icloud_only,
+            status=excluded.status,
+            error_message=excluded.error_message,
+            export_duration_s=excluded.export_duration_s,
+            llm_duration_s=excluded.llm_duration_s,
+            write_duration_s=excluded.write_duration_s,
+            total_duration_s=excluded.total_duration_s,
+            image_size_bytes=excluded.image_size_bytes,
+            image_width=excluded.image_width,
+            image_height=excluded.image_height,
+            num_frames=excluded.num_frames,
+            llm_retries=excluded.llm_retries,
+            keywords_count=excluded.keywords_count,
+            has_ocr=excluded.has_ocr,
+            model=excluded.model,
+            timestamp=excluded.timestamp""",
         (
             uuid,
             filename,
@@ -142,7 +151,10 @@ def start_run(
     """Record the start of a batch run. Returns the run ID."""
     conn = _get_conn()
     cursor = conn.execute(
-        """INSERT INTO run_metrics (started_at, model, threads, dry_run, photos_found, videos_found)
+        """INSERT INTO run_metrics (
+            started_at, model, threads,
+            dry_run, photos_found, videos_found
+        )
         VALUES (?, ?, ?, ?, ?, ?)""",
         (
             datetime.now(timezone.utc).isoformat(),
