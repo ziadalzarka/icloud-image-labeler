@@ -1,6 +1,0 @@
-osxphotos
-photoscript
-openai
-Pillow
-pillow-heif
-datasette

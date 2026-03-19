@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "icloud-image-labeler"
+version = "0.1.0"
+description = "macOS CLI tool that auto-labels iCloud Photos using any OpenAI-compatible LLM"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Ziad Alzarka" }]
+keywords = ["icloud", "photos", "labeling", "llm", "macos"]
+classifiers = [
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Graphics",
+]
+dependencies = [
+    "osxphotos",
+    "photoscript",
+    "openai",
+    "Pillow",
+    "pillow-heif",
+    "datasette",
+]
+
+[project.scripts]
+icloud-image-labeler = "labeler.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["labeler*"]
