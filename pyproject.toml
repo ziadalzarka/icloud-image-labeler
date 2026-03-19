@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "icloud-image-labeler"
-version = "0.1.0"
+version = "0.1.2"
 description = "macOS CLI tool that auto-labels iCloud Photos using any OpenAI-compatible LLM"
 readme = "README.md"
 requires-python = ">=3.10"

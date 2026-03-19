@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import sys
+from importlib.metadata import version
 
 from labeler import config, daemon, metrics
 from labeler.checks import check_dependencies
@@ -161,6 +162,11 @@ def main():
     parser = argparse.ArgumentParser(
         prog="icloud-image-labeler",
         description="Auto-label iCloud Photos using any OpenAI-compatible LLM",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {version('icloud-image-labeler')}",
     )
     subparsers = parser.add_subparsers(dest="command")
 
