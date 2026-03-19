@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 _shutdown_event = threading.Event()
 
 
-def request_shutdown(signum=None, frame=None):
+def request_shutdown(signum=None, _frame=None):
     """Signal handler that sets the shutdown flag."""
     name = signal.Signals(signum).name if signum else "unknown"
     if _shutdown_event.is_set():

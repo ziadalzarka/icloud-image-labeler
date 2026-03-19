@@ -43,7 +43,7 @@ def _open_image(path: str, tmpdir: str):
             raise RuntimeError(
                 f"sips conversion failed for {os.path.basename(path)}: "
                 f"{result.stderr.strip()}"
-            )
+            ) from None
         return Image.open(sips_jpg)
 
 
@@ -142,11 +142,11 @@ def export_video_frames_as_base64(
             )
         try:
             duration = float(result.stdout.strip())
-        except ValueError:
+        except ValueError as err:
             raise RuntimeError(
                 f"ffprobe returned invalid duration for {photo.original_filename}: "
                 f"{result.stdout.strip()!r}"
-            )
+            ) from err
         logger.debug(f"Video duration: {duration:.1f}s")
 
         frames = []

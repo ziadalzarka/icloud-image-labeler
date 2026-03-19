@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from labeler.config import CONFIG_DIR, load_config
+from labeler.config import CONFIG_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,6 @@ def _get_labeler_module_path() -> str:
 
 
 def _generate_plist() -> dict:
-    config = load_config()
     working_dir = _get_labeler_module_path()
     return {
         "Label": "com.image-labeler",

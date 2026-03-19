@@ -31,8 +31,7 @@ def ensure_config() -> dict:
         return dict(DEFAULTS)
     with open(CONFIG_PATH) as f:
         config = json.load(f)
-    merged = {**DEFAULTS, **config}
-    return merged
+    return {**DEFAULTS, **config}
 
 
 def load_config() -> dict:
