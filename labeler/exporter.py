@@ -24,8 +24,8 @@ def _resize_if_needed(img, max_dim: int):
 
 def _open_image(path: str, tmpdir: str):
     """Open an image file with PIL, falling back to sips for unsupported formats."""
-    from PIL import Image
     import pillow_heif
+    from PIL import Image
 
     pillow_heif.register_heif_opener()
 

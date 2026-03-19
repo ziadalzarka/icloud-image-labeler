@@ -5,7 +5,7 @@ import sys
 
 from openai import OpenAI
 
-from labeler.config import CONFIG_PATH, DEFAULTS, save_config, load_config
+from labeler.config import CONFIG_PATH, DEFAULTS, load_config, save_config
 
 
 def _prompt(label: str, default: str = "") -> str:

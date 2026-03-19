@@ -5,13 +5,14 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
 import osxphotos
-from openai import APIConnectionError, APITimeoutError, APIStatusError
+from openai import APIConnectionError, APIStatusError, APITimeoutError
 
+from labeler import metrics
 from labeler.exporter import export_photo_as_base64, export_video_frames_as_base64
 from labeler.llm import create_client, label_photo, label_video
+from labeler.shutdown import is_shutting_down
+from labeler.shutdown import wait as shutdown_wait
 from labeler.writer import write_metadata
-from labeler import metrics
-from labeler.shutdown import is_shutting_down, wait as shutdown_wait
 
 logger = logging.getLogger(__name__)
 
