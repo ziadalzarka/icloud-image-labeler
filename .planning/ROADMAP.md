@@ -88,10 +88,10 @@ Plans:
   2. No ambiguous single-letter variable names exist outside loops and comprehensions
   3. All public functions have docstrings describing purpose and behavior
   4. All modules have module-level docstrings describing their role
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 05-01: TBD
+- [ ] 05-01-PLAN.md -- Add docstrings to all modules and public functions, rename ambiguous variables, enable ruff D rules
 
 ## Progress
 
@@ -104,4 +104,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 2. Automated Lint Fixes | 1/1 | Complete   | 2026-03-19 |
 | 3. Dead Code Removal | 0/1 | Not started | - |
 | 4. Structure Refactoring | 3/3 | Complete   | 2026-03-19 |
-| 5. Naming & Documentation | 0/? | Not started | - |
+| 5. Naming & Documentation | 0/1 | Not started | - |
