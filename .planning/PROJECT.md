@@ -29,7 +29,7 @@ The codebase should be clean, consistent, and easy to read — every module shou
 - [x] Ruff linting and formatting across all modules — Validated in Phase 1: Ruff Setup & Formatting
 - [ ] Break up long/complex functions into smaller, well-named pieces
 - [ ] Improve variable, function, and module naming for clarity
-- [ ] Remove dead code (unused imports, functions, commented-out blocks)
+- [x] Remove dead code (unused imports) — Validated in Phase 2: Automated Lint Fixes
 - [ ] General cleanup — consistent patterns, logical organization within modules
 
 ### Out of Scope
@@ -60,4 +60,4 @@ Key modules: `cli.py`, `config.py`, `discovery.py`, `exporter.py`, `llm.py`, `pr
 | No CI/pre-commit | Can add separately later; this is about the code itself | — Pending |
 
 ---
-*Last updated: 2026-03-19 after Phase 1 completion — Ruff configured, all modules formatted*
+*Last updated: 2026-03-19 after Phase 2 completion — expanded lint rules, pathlib conversions, unused imports cleaned*
