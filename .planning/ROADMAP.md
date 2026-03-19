@@ -29,10 +29,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. `ruff check --select I .` (isort rules) passes with zero violations
   3. Ruff configuration exists in pyproject.toml with target-version = "py310" and selected rule sets
   4. All existing functionality still works identically (no behavior changes from formatting)
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 01-01: TBD
+- [ ] 01-01-PLAN.md -- Configure Ruff and format all modules with sorted imports
 
 ### Phase 2: Automated Lint Fixes
 **Goal**: All auto-fixable lint violations are resolved, including expanded rule sets
@@ -98,7 +98,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Ruff Setup & Formatting | 0/? | Not started | - |
+| 1. Ruff Setup & Formatting | 0/1 | Not started | - |
 | 2. Automated Lint Fixes | 0/? | Not started | - |
 | 3. Dead Code Removal | 0/? | Not started | - |
 | 4. Structure Refactoring | 0/? | Not started | - |
