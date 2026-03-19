@@ -26,7 +26,7 @@ The codebase should be clean, consistent, and easy to read — every module shou
 
 ### Active
 
-- [ ] Ruff linting and formatting across all modules
+- [x] Ruff linting and formatting across all modules — Validated in Phase 1: Ruff Setup & Formatting
 - [ ] Break up long/complex functions into smaller, well-named pieces
 - [ ] Improve variable, function, and module naming for clarity
 - [ ] Remove dead code (unused imports, functions, commented-out blocks)
@@ -55,9 +55,9 @@ Key modules: `cli.py`, `config.py`, `discovery.py`, `exporter.py`, `llm.py`, `pr
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Ruff over Black+isort | All-in-one, extremely fast, modern standard | — Pending |
+| Ruff over Black+isort | All-in-one, extremely fast, modern standard | Validated Phase 1 |
 | No type annotations | Keep scope focused on formatting and structure | — Pending |
 | No CI/pre-commit | Can add separately later; this is about the code itself | — Pending |
 
 ---
-*Last updated: 2026-03-19 after initialization*
+*Last updated: 2026-03-19 after Phase 1 completion — Ruff configured, all modules formatted*
