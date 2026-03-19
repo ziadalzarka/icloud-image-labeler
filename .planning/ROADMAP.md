@@ -43,10 +43,10 @@ Plans:
   2. Expanded rule sets (SIM, C4, PTH, RET, PLR) are enabled and all their auto-fixable violations resolved
   3. No unused imports remain in any module
   4. All existing functionality still works identically after auto-fixes
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 02-01: TBD
+- [ ] 02-01-PLAN.md -- Enable PTH+PLR rule sets and resolve all violations
 
 ### Phase 3: Dead Code Removal
 **Goal**: All dead code and remaining manual lint violations are cleaned up
@@ -99,7 +99,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Ruff Setup & Formatting | 1/1 | Complete   | 2026-03-19 |
-| 2. Automated Lint Fixes | 0/? | Not started | - |
+| 2. Automated Lint Fixes | 0/1 | Not started | - |
 | 3. Dead Code Removal | 0/? | Not started | - |
 | 4. Structure Refactoring | 0/? | Not started | - |
 | 5. Naming & Documentation | 0/? | Not started | - |
