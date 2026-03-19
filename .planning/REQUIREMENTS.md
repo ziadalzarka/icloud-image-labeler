@@ -24,11 +24,11 @@ Requirements for code quality initiative. Each maps to roadmap phases.
 
 ### Structure
 
-- [ ] **STRC-01**: Long functions in `processor.py` decomposed into focused helpers
+- [x] **STRC-01**: Long functions in `processor.py` decomposed into focused helpers
 - [ ] **STRC-02**: Long functions in `cli.py` decomposed into focused helpers
 - [ ] **STRC-03**: Long functions in `exporter.py` decomposed into focused helpers
 - [ ] **STRC-04**: Long functions in remaining modules decomposed where needed
-- [ ] **STRC-05**: Deep nesting replaced with guard clauses / early returns where applicable
+- [x] **STRC-05**: Deep nesting replaced with guard clauses / early returns where applicable
 - [ ] **STRC-06**: Magic numbers and strings extracted into named constants
 
 ### Naming
@@ -80,11 +80,11 @@ Deferred to future release. Tracked but not in current roadmap.
 | DEAD-01 | Phase 2 | Complete |
 | DEAD-02 | Phase 3 | Complete |
 | DEAD-03 | Phase 3 | Complete |
-| STRC-01 | Phase 4 | Pending |
+| STRC-01 | Phase 4 | Complete |
 | STRC-02 | Phase 4 | Pending |
 | STRC-03 | Phase 4 | Pending |
 | STRC-04 | Phase 4 | Pending |
-| STRC-05 | Phase 4 | Pending |
+| STRC-05 | Phase 4 | Complete |
 | STRC-06 | Phase 4 | Pending |
 | NAME-01 | Phase 5 | Pending |
 | NAME-02 | Phase 5 | Pending |
