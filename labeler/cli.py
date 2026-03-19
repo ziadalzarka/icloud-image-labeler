@@ -27,37 +27,46 @@ def _setup_logging(verbose: bool = False):
         logging.getLogger(name).setLevel(logging.INFO)
 
 
+def _resolve_config(args, cfg):
+    """Merge CLI flags with config file values, CLI taking precedence."""
+    resolved = {
+        "base_url": args.base_url or cfg["base_url"],
+        "api_key": args.api_key or cfg["api_key"],
+        "model": args.model or cfg["model"],
+        "limit": args.limit if args.limit is not None else cfg["limit_per_cycle"],
+        "days": args.days if args.days is not None else cfg["days"],
+        "to_days": args.to_days if args.to_days is not None else cfg["to_days"],
+        "threads": args.threads if args.threads is not None else cfg["threads"],
+        "video_frames": (
+            args.video_frames if args.video_frames is not None else cfg["video_frames"]
+        ),
+        "photo": args.photo if args.photo is not None else cfg["photo"],
+        "video": args.video if args.video is not None else cfg["video"],
+    }
+
+    resolved["write"] = cfg["write"]
+    if args.write is True:
+        resolved["write"] = True
+    elif args.dry_run is True:
+        resolved["write"] = False
+
+    resolved["loop"] = args.loop
+    resolved["poll_interval"] = cfg["poll_interval"]
+    resolved["max_dimension"] = cfg["max_dimension"]
+    return resolved
+
+
 def _run(args, cfg):
     """One-shot or loop processing."""
-    # CLI flags override config
-    base_url = args.base_url or cfg["base_url"]
-    api_key = args.api_key or cfg["api_key"]
-    model = args.model or cfg["model"]
-    limit = args.limit if args.limit is not None else cfg["limit_per_cycle"]
-    days = args.days if args.days is not None else cfg["days"]
-    to_days = args.to_days if args.to_days is not None else cfg["to_days"]
-    threads = args.threads if args.threads is not None else cfg["threads"]
-    video_frames = (
-        args.video_frames if args.video_frames is not None else cfg["video_frames"]
-    )
-    photo = args.photo if args.photo is not None else cfg["photo"]
-    video = args.video if args.video is not None else cfg["video"]
-    write = cfg["write"]
-    if args.write is True:
-        write = True
-    elif args.dry_run is True:
-        write = False
-
-    loop = args.loop
-    poll_interval = cfg["poll_interval"]
+    rc = _resolve_config(args, cfg)
 
     def discover():
         return get_unprocessed_media(
-            limit=limit,
-            days_back=days,
-            to_days=to_days,
-            photo=photo,
-            video=video,
+            limit=rc["limit"],
+            days_back=rc["days"],
+            to_days=rc["to_days"],
+            photo=rc["photo"],
+            video=rc["video"],
         )
 
     try:
@@ -76,23 +85,23 @@ def _run(args, cfg):
             if items:
                 process_batch(
                     items,
-                    base_url=base_url,
-                    model=model,
-                    threads=threads,
-                    video_frames=video_frames,
-                    max_dimension=cfg["max_dimension"],
-                    write=write,
+                    base_url=rc["base_url"],
+                    model=rc["model"],
+                    threads=rc["threads"],
+                    video_frames=rc["video_frames"],
+                    max_dimension=rc["max_dimension"],
+                    write=rc["write"],
                     discover_fn=discover,
                     refresh_interval=21600,
-                    api_key=api_key,
+                    api_key=rc["api_key"],
                 )
             else:
                 logger.info("No unprocessed media found.")
 
-            if not loop or is_shutting_down():
+            if not rc["loop"] or is_shutting_down():
                 break
-            logger.info(f"Sleeping {poll_interval}s until next cycle...")
-            if shutdown_wait(poll_interval):
+            logger.info(f"Sleeping {rc['poll_interval']}s until next cycle...")
+            if shutdown_wait(rc["poll_interval"]):
                 break
     except KeyboardInterrupt:
         logger.info("Interrupted, exiting.")
@@ -152,28 +161,8 @@ def _metrics_cmd(args):
         sp.run(["datasette", "serve", metrics.DB_PATH, "-p", str(port)])
 
 
-def main():
-    # Pre-parse for verbose flag before full parsing
-    pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("-v", "--verbose", action="store_true", default=False)
-    known, _ = pre.parse_known_args()
-    _setup_logging(verbose=known.verbose)
-
-    parser = argparse.ArgumentParser(
-        prog="icloud-image-labeler",
-        description="Auto-label iCloud Photos using any OpenAI-compatible LLM",
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {version('icloud-image-labeler')}",
-    )
-    subparsers = parser.add_subparsers(dest="command")
-
-    # init subcommand
-    subparsers.add_parser("init", help="Interactive first-run setup wizard")
-
-    # run subcommand
+def _build_run_parser(subparsers):
+    """Create and configure the 'run' subparser."""
     run_parser = subparsers.add_parser("run", help="Process unprocessed media")
     run_parser.add_argument("--limit", type=int, default=None)
     run_parser.add_argument("--days", type=int, default=None)
@@ -194,15 +183,37 @@ def main():
     )
     run_parser.add_argument("--loop", action="store_true", default=False)
     run_parser.add_argument("-v", "--verbose", action="store_true", default=False)
+    return run_parser
 
-    # daemon subcommand
+
+def _build_parser():
+    """Build CLI argument parser, set up logging from pre-parsed verbose flag."""
+    # Pre-parse for verbose flag before full parsing
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("-v", "--verbose", action="store_true", default=False)
+    known, _ = pre.parse_known_args()
+    _setup_logging(verbose=known.verbose)
+
+    parser = argparse.ArgumentParser(
+        prog="icloud-image-labeler",
+        description="Auto-label iCloud Photos using any OpenAI-compatible LLM",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {version('icloud-image-labeler')}",
+    )
+    subparsers = parser.add_subparsers(dest="command")
+
+    subparsers.add_parser("init", help="Interactive first-run setup wizard")
+    run_parser = _build_run_parser(subparsers)
+
     daemon_parser = subparsers.add_parser("daemon", help="Manage background daemon")
     daemon_parser.add_argument(
         "daemon_action",
         choices=["start", "stop", "restart", "status"],
     )
 
-    # config subcommand
     config_parser = subparsers.add_parser("config", help="Manage configuration")
     config_parser.add_argument(
         "config_action",
@@ -211,7 +222,6 @@ def main():
     config_parser.add_argument("key", nargs="?", default=None)
     config_parser.add_argument("value", nargs="?", default=None)
 
-    # metrics subcommand
     metrics_parser = subparsers.add_parser("metrics", help="View processing metrics")
     metrics_parser.add_argument(
         "metrics_action",
@@ -219,6 +229,11 @@ def main():
     )
     metrics_parser.add_argument("--port", type=int, default=None)
 
+    return parser, run_parser
+
+
+def main():
+    parser, run_parser = _build_parser()
     args = parser.parse_args()
     cfg = config.load_config()
     metrics.init_db()
@@ -230,7 +245,6 @@ def main():
     if args.command is None or args.command == "run":
         install_signal_handlers()
         if args.command is None:
-            # Default to run with default args
             args = run_parser.parse_args([])
         if not config.CONFIG_PATH.exists():
             print("No config found. Running setup wizard...\n")
