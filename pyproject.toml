@@ -37,7 +37,7 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["F", "E", "W", "I", "UP", "B", "SIM", "C4", "RET", "PIE", "ERA", "ARG", "RUF", "PTH", "PLR"]
-ignore = ["PLR0912", "PLR0913", "PLR0915"]
+ignore = ["PLR0913"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["labeler"]
