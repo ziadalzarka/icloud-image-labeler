@@ -7,6 +7,7 @@ import time
 from labeler import config, daemon, metrics
 from labeler.checks import check_dependencies
 from labeler.discovery import get_unprocessed_media
+from labeler.init import run_init
 from labeler.processor import process_batch
 from labeler.shutdown import install_handlers as install_signal_handlers, is_shutting_down, wait as shutdown_wait
 
@@ -142,10 +143,13 @@ def main():
     _setup_logging(verbose=known.verbose)
 
     parser = argparse.ArgumentParser(
-        prog="labeler",
-        description="Auto-label iCloud Photos with a local LLM",
+        prog="icloud-image-labeler",
+        description="Auto-label iCloud Photos using any OpenAI-compatible LLM",
     )
     subparsers = parser.add_subparsers(dest="command")
+
+    # init subcommand
+    subparsers.add_parser("init", help="Interactive first-run setup wizard")
 
     # run subcommand
     run_parser = subparsers.add_parser("run", help="Process unprocessed media")
@@ -193,10 +197,18 @@ def main():
     metrics.init_db()
     install_signal_handlers()
 
+    if args.command == "init":
+        run_init()
+        return
+
     if args.command is None or args.command == "run":
         if args.command is None:
             # Default to run with default args
             args = run_parser.parse_args([])
+        if not config.CONFIG_PATH.exists():
+            print("No config found. Running setup wizard...\n")
+            run_init()
+            cfg = config.load_config()
         check_dependencies()
         _run(args, cfg)
     elif args.command == "daemon":
