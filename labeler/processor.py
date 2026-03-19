@@ -323,6 +323,224 @@ def _maybe_refresh(
     )
 
 
+# --- Batch orchestration helpers --------------------------------------------
+
+
+def _collect_completed_futures(in_flight: dict, state: _BatchState) -> None:
+    """Drain done futures from in_flight, updating state counters."""
+    for fut in [f for f in in_flight if f.done()]:
+        photo = in_flight.pop(fut)
+        state.processed += 1
+        try:
+            fut.result()
+            state.photos_ok += 1
+            logger.info(
+                f"[{state.processed}/{state.total}] Done: "
+                f"{photo.original_filename} "
+                f"(added {_format_date(photo)})"
+            )
+        except MaxFailuresExceeded:
+            raise
+        except Exception as e:
+            state.photos_fail += 1
+            logger.error(
+                f"[{state.processed}/{state.total}] Failed: "
+                f"{photo.original_filename}: {e}"
+            )
+
+
+def _export_and_submit_photo(
+    photo,
+    pool,
+    in_flight,
+    state,
+    model,
+    max_dimension,
+    base_url,
+    write,
+    tracker,
+    api_key,
+    discover_fn,
+    refresh_interval,
+    photo_idx,
+):
+    """Export one photo on the main thread and submit LLM+write to the pool."""
+    _maybe_refresh(
+        state,
+        discover_fn,
+        refresh_interval,
+        photo_insert_idx=photo_idx,
+        video_insert_idx=0,
+    )
+
+    try:
+        t_export = time.monotonic()
+        image_b64, export_meta = export_photo_as_base64(
+            photo, max_dimension=max_dimension
+        )
+        export_duration = time.monotonic() - t_export
+    except Exception as e:
+        state.processed += 1
+        state.photos_fail += 1
+        _record_error(photo, "photo", model, e)
+        logger.error(
+            f"[{state.processed}/{state.total}] Export failed: "
+            f"{photo.original_filename}: {e}"
+        )
+        tracker.record_failure(photo.uuid, photo.original_filename)
+        return
+
+    fut = pool.submit(
+        _label_photo_with_retry,
+        photo,
+        image_b64,
+        export_meta,
+        export_duration,
+        base_url,
+        model,
+        write,
+        tracker,
+        api_key,
+    )
+    in_flight[fut] = photo
+
+
+def _drain_remaining_futures(in_flight: dict, state: _BatchState) -> None:
+    """Drain in-flight futures after the main photo loop exits."""
+    if is_shutting_down():
+        for fut in in_flight:
+            fut.cancel()
+    for fut in list(in_flight):
+        photo = in_flight[fut]
+        if fut.cancelled():
+            continue
+        state.processed += 1
+        try:
+            fut.result(timeout=5)
+            state.photos_ok += 1
+            logger.info(
+                f"[{state.processed}/{state.total}] Done: "
+                f"{photo.original_filename} "
+                f"(added {_format_date(photo)})"
+            )
+        except MaxFailuresExceeded:
+            raise
+        except Exception as e:
+            state.photos_fail += 1
+            logger.error(
+                f"[{state.processed}/{state.total}] Failed: "
+                f"{photo.original_filename}: {e}"
+            )
+
+
+def _process_photos_parallel(
+    state,
+    threads,
+    model,
+    max_dimension,
+    base_url,
+    write,
+    tracker,
+    api_key,
+    discover_fn,
+    refresh_interval,
+):
+    """Process photos: export on main thread, LLM+write in worker threads."""
+    pool = ThreadPoolExecutor(max_workers=threads)
+    in_flight: dict = {}  # future -> PhotoInfo
+    i = 0
+    try:
+        while (i < len(state.photos) or in_flight) and not is_shutting_down():
+            _collect_completed_futures(in_flight, state)
+
+            # Backpressure: wait if all worker slots are busy
+            if i < len(state.photos) and len(in_flight) >= threads:
+                time.sleep(0.1)
+                continue
+
+            # Drain remaining futures
+            if i >= len(state.photos):
+                time.sleep(0.1)
+                continue
+
+            p = state.photos[i]
+            i += 1
+
+            _export_and_submit_photo(
+                p,
+                pool,
+                in_flight,
+                state,
+                model,
+                max_dimension,
+                base_url,
+                write,
+                tracker,
+                api_key,
+                discover_fn,
+                refresh_interval,
+                i,
+            )
+
+        _drain_remaining_futures(in_flight, state)
+    finally:
+        pool.shutdown(wait=not is_shutting_down(), cancel_futures=is_shutting_down())
+
+
+def _process_videos_sequential(
+    state,
+    base_url,
+    model,
+    video_frames,
+    max_dimension,
+    write,
+    tracker,
+    api_key,
+    discover_fn,
+    refresh_interval,
+):
+    """Process videos sequentially on the main thread."""
+    i = 0
+    while i < len(state.videos) and not is_shutting_down():
+        video = state.videos[i]
+        i += 1
+        state.processed += 1
+
+        _maybe_refresh(
+            state,
+            discover_fn,
+            refresh_interval,
+            photo_insert_idx=len(state.photos),
+            video_insert_idx=i,
+        )
+
+        try:
+            _process_video_with_retry(
+                video,
+                base_url,
+                model,
+                video_frames,
+                max_dimension,
+                write,
+                tracker,
+                api_key,
+            )
+            state.videos_ok += 1
+            logger.info(
+                f"[{state.processed}/{state.total}] Done: "
+                f"{video.original_filename} "
+                f"(added {_format_date(video)})"
+            )
+        except MaxFailuresExceeded:
+            raise
+        except Exception as e:
+            state.videos_fail += 1
+            logger.error(
+                f"[{state.processed}/{state.total}] Failed: "
+                f"{video.original_filename}: {e}"
+            )
+
+
 # --- Batch orchestration ---------------------------------------------------
 
 
@@ -358,165 +576,40 @@ def process_batch(
     )
     state.last_refresh = time.monotonic()
 
-    # Phase 1: Photos — export on main thread, LLM+write in parallel
     if state.photos:
         logger.info(
             f"Processing {len(state.photos)} photos (up to {threads} threads)..."
         )
-        pool = ThreadPoolExecutor(max_workers=threads)
-        in_flight: dict = {}  # future -> PhotoInfo
-        i = 0
-        try:
-            while (i < len(state.photos) or in_flight) and not is_shutting_down():
-                # Collect completed futures
-                for fut in [f for f in in_flight if f.done()]:
-                    photo = in_flight.pop(fut)
-                    state.processed += 1
-                    try:
-                        fut.result()
-                        state.photos_ok += 1
-                        logger.info(
-                            f"[{state.processed}/{state.total}] Done: "
-                            f"{photo.original_filename} "
-                            f"(added {_format_date(photo)})"
-                        )
-                    except MaxFailuresExceeded:
-                        raise
-                    except Exception as e:
-                        state.photos_fail += 1
-                        logger.error(
-                            f"[{state.processed}/{state.total}] Failed: "
-                            f"{photo.original_filename}: {e}"
-                        )
-
-                # Backpressure: wait if all worker slots are busy
-                if i < len(state.photos) and len(in_flight) >= threads:
-                    time.sleep(0.1)
-                    continue
-
-                # Drain remaining futures
-                if i >= len(state.photos):
-                    time.sleep(0.1)
-                    continue
-
-                p = state.photos[i]
-                i += 1
-
-                _maybe_refresh(
-                    state,
-                    discover_fn,
-                    refresh_interval,
-                    photo_insert_idx=i,
-                    video_insert_idx=0,
-                )
-
-                # Export on main thread (osxphotos SQLite is thread-bound)
-                try:
-                    t_export = time.monotonic()
-                    image_b64, export_meta = export_photo_as_base64(
-                        p, max_dimension=max_dimension
-                    )
-                    export_duration = time.monotonic() - t_export
-                except Exception as e:
-                    state.processed += 1
-                    state.photos_fail += 1
-                    _record_error(p, "photo", model, e)
-                    logger.error(
-                        f"[{state.processed}/{state.total}] Export failed: "
-                        f"{p.original_filename}: {e}"
-                    )
-                    tracker.record_failure(p.uuid, p.original_filename)
-                    continue
-
-                fut = pool.submit(
-                    _label_photo_with_retry,
-                    p,
-                    image_b64,
-                    export_meta,
-                    export_duration,
-                    base_url,
-                    model,
-                    write,
-                    tracker,
-                    api_key,
-                )
-                in_flight[fut] = p
-
-            # Drain any remaining in-flight futures
-            if is_shutting_down():
-                for fut in in_flight:
-                    fut.cancel()
-            for fut in list(in_flight):
-                photo = in_flight[fut]
-                if fut.cancelled():
-                    continue
-                state.processed += 1
-                try:
-                    fut.result(timeout=5)
-                    state.photos_ok += 1
-                    logger.info(
-                        f"[{state.processed}/{state.total}] Done: "
-                        f"{photo.original_filename} "
-                        f"(added {_format_date(photo)})"
-                    )
-                except MaxFailuresExceeded:
-                    raise
-                except Exception as e:
-                    state.photos_fail += 1
-                    logger.error(
-                        f"[{state.processed}/{state.total}] Failed: "
-                        f"{photo.original_filename}: {e}"
-                    )
-        finally:
-            pool.shutdown(
-                wait=not is_shutting_down(), cancel_futures=is_shutting_down()
-            )
+        _process_photos_parallel(
+            state,
+            threads,
+            model,
+            max_dimension,
+            base_url,
+            write,
+            tracker,
+            api_key,
+            discover_fn,
+            refresh_interval,
+        )
 
     if is_shutting_down():
         logger.info("Shutdown requested, stopping batch processing.")
 
-    # Phase 2: Videos sequentially (on main thread)
     if state.videos:
         logger.info(f"Processing {len(state.videos)} videos sequentially...")
-        i = 0
-        while i < len(state.videos) and not is_shutting_down():
-            video = state.videos[i]
-            i += 1
-            state.processed += 1
-
-            _maybe_refresh(
-                state,
-                discover_fn,
-                refresh_interval,
-                photo_insert_idx=len(state.photos),
-                video_insert_idx=i,
-            )
-
-            try:
-                _process_video_with_retry(
-                    video,
-                    base_url,
-                    model,
-                    video_frames,
-                    max_dimension,
-                    write,
-                    tracker,
-                    api_key,
-                )
-                state.videos_ok += 1
-                logger.info(
-                    f"[{state.processed}/{state.total}] Done: "
-                    f"{video.original_filename} "
-                    f"(added {_format_date(video)})"
-                )
-            except MaxFailuresExceeded:
-                raise
-            except Exception as e:
-                state.videos_fail += 1
-                logger.error(
-                    f"[{state.processed}/{state.total}] Failed: "
-                    f"{video.original_filename}: {e}"
-                )
+        _process_videos_sequential(
+            state,
+            base_url,
+            model,
+            video_frames,
+            max_dimension,
+            write,
+            tracker,
+            api_key,
+            discover_fn,
+            refresh_interval,
+        )
 
     metrics.finish_run(
         run_id=run_id,
