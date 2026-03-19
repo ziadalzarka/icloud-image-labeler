@@ -22,6 +22,9 @@ RETRY_BASE_DELAY = 5  # seconds
 RETRY_MAX_DELAY = 300  # seconds
 _HTTP_SERVER_ERROR = 500
 _HTTP_BAD_REQUEST = 400
+_POLL_INTERVAL = 0.1  # seconds between checking futures
+_FUTURE_DRAIN_TIMEOUT = 5  # seconds to wait for remaining futures
+DEFAULT_REFRESH_INTERVAL = 21600  # seconds (6 hours)
 
 
 class MaxFailuresExceeded(RuntimeError):
@@ -416,7 +419,7 @@ def _drain_remaining_futures(in_flight: dict, state: _BatchState) -> None:
             continue
         state.processed += 1
         try:
-            fut.result(timeout=5)
+            fut.result(timeout=_FUTURE_DRAIN_TIMEOUT)
             state.photos_ok += 1
             logger.info(
                 f"[{state.processed}/{state.total}] Done: "
@@ -455,12 +458,12 @@ def _process_photos_parallel(
 
             # Backpressure: wait if all worker slots are busy
             if i < len(state.photos) and len(in_flight) >= threads:
-                time.sleep(0.1)
+                time.sleep(_POLL_INTERVAL)
                 continue
 
             # Drain remaining futures
             if i >= len(state.photos):
-                time.sleep(0.1)
+                time.sleep(_POLL_INTERVAL)
                 continue
 
             p = state.photos[i]
@@ -553,7 +556,7 @@ def process_batch(
     max_dimension: int = 1024,
     write: bool = True,
     discover_fn=None,
-    refresh_interval: int = 21600,
+    refresh_interval: int = DEFAULT_REFRESH_INTERVAL,
     api_key: str = "",
 ):
     """Process a batch of media: photos in parallel, then videos sequentially.

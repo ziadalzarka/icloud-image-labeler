@@ -8,6 +8,11 @@ import osxphotos
 
 logger = logging.getLogger(__name__)
 
+PHOTO_EXPORT_TIMEOUT = 30  # seconds
+VIDEO_EXPORT_TIMEOUT = 300  # seconds
+JPEG_QUALITY = 85
+FFMPEG_QUALITY = "2"  # -q:v value for ffmpeg frame extraction
+
 
 def _resize_if_needed(img, max_dim: int):
     """Resize image so the longest side is at most max_dim pixels.
@@ -51,7 +56,9 @@ def _open_image(path: str, tmpdir: str):
 
 def _resolve_export_path(photo, tmpdir):
     """Export photo via osxphotos and return the export path, or None on failure."""
-    exported = photo.export(tmpdir, use_photos_export=True, timeout=30)
+    exported = photo.export(
+        tmpdir, use_photos_export=True, timeout=PHOTO_EXPORT_TIMEOUT
+    )
     if exported:
         return exported[0]
 
@@ -96,7 +103,7 @@ def _encode_as_jpeg(img, max_dimension, tmpdir):
     img = img.convert("RGB")
     img = _resize_if_needed(img, max_dimension)
     jpeg_path = str(Path(tmpdir) / "photo.jpg")
-    img.save(jpeg_path, "JPEG", quality=85)
+    img.save(jpeg_path, "JPEG", quality=JPEG_QUALITY)
     jpeg_size = Path(jpeg_path).stat().st_size
     jpeg_mb = jpeg_size / (1024 * 1024)
     logger.debug(f"JPEG: {img.size[0]}x{img.size[1]} ({jpeg_mb:.1f} MB)")
@@ -170,7 +177,7 @@ def _extract_frame(video_path, timestamp, frame_path, max_dimension):
             "-frames:v",
             "1",
             "-q:v",
-            "2",
+            FFMPEG_QUALITY,
             "-vf",
             f"scale='min({max_dimension},iw)':'min({max_dimension},ih)'"
             f":force_original_aspect_ratio=decrease",
@@ -226,7 +233,9 @@ def export_video_frames_as_base64(
     """
     logger.debug(f"Exporting video (missing={photo.ismissing})...")
     with tempfile.TemporaryDirectory() as tmpdir:
-        exported = photo.export(tmpdir, use_photos_export=True, timeout=300)
+        exported = photo.export(
+            tmpdir, use_photos_export=True, timeout=VIDEO_EXPORT_TIMEOUT
+        )
         if not exported:
             raise RuntimeError(f"Failed to export video {photo.uuid}")
         video_path = exported[0]

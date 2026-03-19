@@ -6,6 +6,9 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
+LLM_TIMEOUT = 90.0  # seconds
+LLM_TEMPERATURE = 0.3
+
 PHOTO_SYSTEM_PROMPT = """\
 You are a photo labeling assistant. Given a photo, generate:
 1. **keywords**: A list of descriptive keywords/tags
@@ -42,7 +45,9 @@ Respond ONLY with valid JSON in this exact format:
 
 
 def create_client(base_url: str, api_key: str = "") -> OpenAI:
-    return OpenAI(base_url=base_url, api_key=api_key or "not-needed", timeout=90.0)
+    return OpenAI(
+        base_url=base_url, api_key=api_key or "not-needed", timeout=LLM_TIMEOUT
+    )
 
 
 def _parse_response(raw: str) -> dict:
@@ -65,7 +70,7 @@ def _request_labels(client: OpenAI, model: str, messages: list) -> tuple[dict, i
     response = client.chat.completions.create(
         model=model,
         messages=messages,
-        temperature=0.3,
+        temperature=LLM_TEMPERATURE,
     )
     raw = response.choices[0].message.content.strip()
     logger.debug(f"Received response ({len(raw)} chars)")
@@ -81,7 +86,7 @@ def _request_labels(client: OpenAI, model: str, messages: list) -> tuple[dict, i
         response = client.chat.completions.create(
             model=model,
             messages=messages,
-            temperature=0.3,
+            temperature=LLM_TEMPERATURE,
         )
         raw = response.choices[0].message.content.strip()
         labels = _parse_response(raw)

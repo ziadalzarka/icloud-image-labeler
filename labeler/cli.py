@@ -15,6 +15,9 @@ from labeler.shutdown import wait as shutdown_wait
 
 logger = logging.getLogger("labeler")
 
+DEFAULT_REFRESH_INTERVAL = 21600  # seconds (6 hours)
+DEFAULT_DATASETTE_PORT = 8001
+
 
 def _setup_logging(verbose: bool = False):
     logging.basicConfig(
@@ -92,7 +95,7 @@ def _run(args, cfg):
                     max_dimension=rc["max_dimension"],
                     write=rc["write"],
                     discover_fn=discover,
-                    refresh_interval=21600,
+                    refresh_interval=DEFAULT_REFRESH_INTERVAL,
                     api_key=rc["api_key"],
                 )
             else:
@@ -155,7 +158,7 @@ def _metrics_cmd(args):
     elif action == "serve":
         import subprocess as sp
 
-        port = args.port or 8001
+        port = args.port or DEFAULT_DATASETTE_PORT
         print(f"Starting Datasette on http://localhost:{port}")
         print(f"Database: {metrics.DB_PATH}")
         sp.run(["datasette", "serve", metrics.DB_PATH, "-p", str(port)])

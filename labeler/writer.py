@@ -8,6 +8,8 @@ logger = logging.getLogger(__name__)
 
 _write_lock = threading.Lock()
 
+PHOTOS_APP_STARTUP_WAIT = 3  # seconds to wait for Photos.app to start
+
 
 def _ensure_photos_app():
     """Check if Photos.app is running; open it if not."""
@@ -17,7 +19,7 @@ def _ensure_photos_app():
         subprocess.run(["open", "-a", "Photos"])
         import time
 
-        time.sleep(3)
+        time.sleep(PHOTOS_APP_STARTUP_WAIT)
 
 
 def write_metadata(photo_uuid: str, labels: dict, write: bool = True):
