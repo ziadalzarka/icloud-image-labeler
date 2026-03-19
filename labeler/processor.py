@@ -25,7 +25,9 @@ class MaxFailuresExceeded(RuntimeError):
 
 
 def _is_retryable_error(exc: Exception) -> bool:
-    if isinstance(exc, (APIConnectionError, APITimeoutError, ConnectionError, TimeoutError)):
+    if isinstance(
+        exc, (APIConnectionError, APITimeoutError, ConnectionError, TimeoutError)
+    ):
         return True
     if isinstance(exc, APIStatusError):
         if exc.status_code >= 500:
@@ -37,7 +39,7 @@ def _is_retryable_error(exc: Exception) -> bool:
 
 
 def _retry_delay(attempt: int) -> float:
-    return min(RETRY_BASE_DELAY * (2 ** attempt), RETRY_MAX_DELAY)
+    return min(RETRY_BASE_DELAY * (2**attempt), RETRY_MAX_DELAY)
 
 
 def _format_date(item: osxphotos.PhotoInfo) -> str:
@@ -45,7 +47,9 @@ def _format_date(item: osxphotos.PhotoInfo) -> str:
     return dt.strftime("%Y-%m-%d") if dt else "?"
 
 
-def _record_error(item: osxphotos.PhotoInfo, media_type: str, model: str, error: Exception):
+def _record_error(
+    item: osxphotos.PhotoInfo, media_type: str, model: str, error: Exception
+):
     """Record a failed item in metrics."""
     metrics.record_item(
         uuid=item.uuid,
@@ -77,6 +81,7 @@ class ItemFailureTracker:
 
 
 # --- Photo processing (export on main thread, LLM+write in worker) --------
+
 
 def _label_and_write_photo(
     item: osxphotos.PhotoInfo,
@@ -120,19 +125,38 @@ def _label_and_write_photo(
     )
 
 
-def _label_photo_with_retry(item, image_b64, export_meta, export_duration,
-                             base_url, model, write, tracker, api_key=""):
+def _label_photo_with_retry(
+    item,
+    image_b64,
+    export_meta,
+    export_duration,
+    base_url,
+    model,
+    write,
+    tracker,
+    api_key="",
+):
     attempt = 0
     while True:
         try:
-            _label_and_write_photo(item, image_b64, export_meta, export_duration,
-                                   base_url, model, write, api_key=api_key)
+            _label_and_write_photo(
+                item,
+                image_b64,
+                export_meta,
+                export_duration,
+                base_url,
+                model,
+                write,
+                api_key=api_key,
+            )
             return
         except Exception as e:
             if _is_retryable_error(e):
                 delay = _retry_delay(attempt)
                 attempt += 1
-                logger.warning(f"Retryable error (attempt {attempt}): {e}. Retrying in {delay}s...")
+                logger.warning(
+                    f"Retryable error (attempt {attempt}): {e}. Retrying in {delay}s..."
+                )
                 if shutdown_wait(delay):
                     raise
                 continue
@@ -142,6 +166,7 @@ def _label_photo_with_retry(item, image_b64, export_meta, export_duration,
 
 
 # --- Video processing (fully on main thread) ------------------------------
+
 
 def _process_single_video(
     item: osxphotos.PhotoInfo,
@@ -194,17 +219,29 @@ def _process_single_video(
     )
 
 
-def _process_video_with_retry(item, base_url, model, video_frames, max_dimension, write, tracker, api_key=""):
+def _process_video_with_retry(
+    item, base_url, model, video_frames, max_dimension, write, tracker, api_key=""
+):
     attempt = 0
     while True:
         try:
-            _process_single_video(item, base_url, model, video_frames, max_dimension, write, api_key=api_key)
+            _process_single_video(
+                item,
+                base_url,
+                model,
+                video_frames,
+                max_dimension,
+                write,
+                api_key=api_key,
+            )
             return
         except Exception as e:
             if _is_retryable_error(e):
                 delay = _retry_delay(attempt)
                 attempt += 1
-                logger.warning(f"Retryable error (attempt {attempt}): {e}. Retrying in {delay}s...")
+                logger.warning(
+                    f"Retryable error (attempt {attempt}): {e}. Retrying in {delay}s..."
+                )
                 if shutdown_wait(delay):
                     raise
                 continue
@@ -214,6 +251,7 @@ def _process_video_with_retry(item, base_url, model, video_frames, max_dimension
 
 
 # --- Batch orchestration ---------------------------------------------------
+
 
 def process_batch(
     items: list[osxphotos.PhotoInfo],
@@ -243,8 +281,11 @@ def process_batch(
     processed = 0
 
     run_id = metrics.start_run(
-        model=model, threads=threads, dry_run=not write,
-        photos_found=len(photos), videos_found=len(videos),
+        model=model,
+        threads=threads,
+        dry_run=not write,
+        photos_found=len(photos),
+        videos_found=len(videos),
     )
     photos_ok = photos_fail = videos_ok = videos_fail = 0
     last_refresh = time.monotonic()
@@ -265,7 +306,9 @@ def process_batch(
             return
         new_items = [p for p in fresh if p.uuid not in seen_uuids]
         if not new_items:
-            logger.info(f"Refresh complete: no new items ({len(fresh)} returned, all seen)")
+            logger.info(
+                f"Refresh complete: no new items ({len(fresh)} returned, all seen)"
+            )
             return
         for p in new_items:
             seen_uuids.add(p.uuid)
@@ -274,7 +317,9 @@ def process_batch(
         photos[photo_insert_idx:photo_insert_idx] = new_photos
         videos[video_insert_idx:video_insert_idx] = new_videos
         total += len(new_items)
-        logger.info(f"Added {len(new_items)} new items ({len(new_photos)} photos, {len(new_videos)} videos), total now {total}")
+        logger.info(
+            f"Added {len(new_items)} new items ({len(new_photos)} photos, {len(new_videos)} videos), total now {total}"
+        )
 
     # Phase 1: Photos — export on main thread, LLM+write in parallel
     if photos:
@@ -291,12 +336,16 @@ def process_batch(
                     try:
                         fut.result()
                         photos_ok += 1
-                        logger.info(f"[{processed}/{total}] Done: {photo.original_filename} (added {_format_date(photo)})")
+                        logger.info(
+                            f"[{processed}/{total}] Done: {photo.original_filename} (added {_format_date(photo)})"
+                        )
                     except MaxFailuresExceeded:
                         raise
                     except Exception as e:
                         photos_fail += 1
-                        logger.error(f"[{processed}/{total}] Failed: {photo.original_filename}: {e}")
+                        logger.error(
+                            f"[{processed}/{total}] Failed: {photo.original_filename}: {e}"
+                        )
 
                 # Backpressure: wait if all worker slots are busy
                 if i < len(photos) and len(in_flight) >= threads:
@@ -316,19 +365,31 @@ def process_batch(
                 # Export on main thread (osxphotos SQLite is thread-bound)
                 try:
                     t_export = time.monotonic()
-                    image_b64, export_meta = export_photo_as_base64(p, max_dimension=max_dimension)
+                    image_b64, export_meta = export_photo_as_base64(
+                        p, max_dimension=max_dimension
+                    )
                     export_duration = time.monotonic() - t_export
                 except Exception as e:
                     processed += 1
                     photos_fail += 1
                     _record_error(p, "photo", model, e)
-                    logger.error(f"[{processed}/{total}] Export failed: {p.original_filename}: {e}")
+                    logger.error(
+                        f"[{processed}/{total}] Export failed: {p.original_filename}: {e}"
+                    )
                     tracker.record_failure(p.uuid, p.original_filename)
                     continue
 
                 fut = pool.submit(
-                    _label_photo_with_retry, p, image_b64, export_meta, export_duration,
-                    base_url, model, write, tracker, api_key,
+                    _label_photo_with_retry,
+                    p,
+                    image_b64,
+                    export_meta,
+                    export_duration,
+                    base_url,
+                    model,
+                    write,
+                    tracker,
+                    api_key,
                 )
                 in_flight[fut] = p
 
@@ -344,14 +405,20 @@ def process_batch(
                 try:
                     fut.result(timeout=5)
                     photos_ok += 1
-                    logger.info(f"[{processed}/{total}] Done: {photo.original_filename} (added {_format_date(photo)})")
+                    logger.info(
+                        f"[{processed}/{total}] Done: {photo.original_filename} (added {_format_date(photo)})"
+                    )
                 except MaxFailuresExceeded:
                     raise
                 except Exception as e:
                     photos_fail += 1
-                    logger.error(f"[{processed}/{total}] Failed: {photo.original_filename}: {e}")
+                    logger.error(
+                        f"[{processed}/{total}] Failed: {photo.original_filename}: {e}"
+                    )
         finally:
-            pool.shutdown(wait=not is_shutting_down(), cancel_futures=is_shutting_down())
+            pool.shutdown(
+                wait=not is_shutting_down(), cancel_futures=is_shutting_down()
+            )
 
     if is_shutting_down():
         logger.info("Shutdown requested, stopping batch processing.")
@@ -368,14 +435,27 @@ def process_batch(
             _maybe_refresh(photo_insert_idx=len(photos), video_insert_idx=i)
 
             try:
-                _process_video_with_retry(video, base_url, model, video_frames, max_dimension, write, tracker, api_key)
+                _process_video_with_retry(
+                    video,
+                    base_url,
+                    model,
+                    video_frames,
+                    max_dimension,
+                    write,
+                    tracker,
+                    api_key,
+                )
                 videos_ok += 1
-                logger.info(f"[{processed}/{total}] Done: {video.original_filename} (added {_format_date(video)})")
+                logger.info(
+                    f"[{processed}/{total}] Done: {video.original_filename} (added {_format_date(video)})"
+                )
             except MaxFailuresExceeded:
                 raise
             except Exception as e:
                 videos_fail += 1
-                logger.error(f"[{processed}/{total}] Failed: {video.original_filename}: {e}")
+                logger.error(
+                    f"[{processed}/{total}] Failed: {video.original_filename}: {e}"
+                )
 
     metrics.finish_run(
         run_id=run_id,

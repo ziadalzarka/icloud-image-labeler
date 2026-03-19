@@ -69,7 +69,9 @@ def _request_labels(client: OpenAI, model: str, messages: list) -> tuple[dict, i
     except (json.JSONDecodeError, IndexError):
         logger.warning("JSON parse failed, retrying with correction prompt...")
         messages.append({"role": "assistant", "content": raw})
-        messages.append({"role": "user", "content": "Please respond with valid JSON only."})
+        messages.append(
+            {"role": "user", "content": "Please respond with valid JSON only."}
+        )
         response = client.chat.completions.create(
             model=model,
             messages=messages,
@@ -81,7 +83,9 @@ def _request_labels(client: OpenAI, model: str, messages: list) -> tuple[dict, i
         return labels, 1
 
 
-def label_photo(client: OpenAI, model: str, image_b64: str, filename: str) -> tuple[dict, int]:
+def label_photo(
+    client: OpenAI, model: str, image_b64: str, filename: str
+) -> tuple[dict, int]:
     """Send a photo to the LLM for labeling. Returns (labels, retries)."""
     logger.info(f"Labeling photo: {filename}")
     messages = [
@@ -102,17 +106,24 @@ def label_photo(client: OpenAI, model: str, image_b64: str, filename: str) -> tu
     return labels, retries
 
 
-def label_video(client: OpenAI, model: str, frames_b64: list[str], filename: str) -> tuple[dict, int]:
+def label_video(
+    client: OpenAI, model: str, frames_b64: list[str], filename: str
+) -> tuple[dict, int]:
     """Send video frames to the LLM for labeling. Returns (labels, retries)."""
     logger.info(f"Labeling video: {filename} ({len(frames_b64)} frames)")
     image_content = [
-        {"type": "text", "text": f"These are {len(frames_b64)} frames extracted at equal intervals from a video. Label this video:"}
+        {
+            "type": "text",
+            "text": f"These are {len(frames_b64)} frames extracted at equal intervals from a video. Label this video:",
+        }
     ]
     for frame_b64 in frames_b64:
-        image_content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{frame_b64}"},
-        })
+        image_content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{frame_b64}"},
+            }
+        )
 
     messages = [
         {"role": "system", "content": VIDEO_SYSTEM_PROMPT},

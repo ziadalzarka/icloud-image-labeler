@@ -19,13 +19,17 @@ def check_dependencies():
     # Check Photos.app exists
     result = subprocess.run(
         ["mdfind", "kMDItemCFBundleIdentifier == 'com.apple.Photos'"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0 or not result.stdout.strip():
         missing.append("Photos.app")
 
     if missing:
-        print(f"Error: missing required dependencies: {', '.join(missing)}", file=sys.stderr)
+        print(
+            f"Error: missing required dependencies: {', '.join(missing)}",
+            file=sys.stderr,
+        )
         if {"ffmpeg", "ffprobe"} & set(missing):
             print("  Install ffmpeg: brew install ffmpeg", file=sys.stderr)
         if "Photos.app" in missing:

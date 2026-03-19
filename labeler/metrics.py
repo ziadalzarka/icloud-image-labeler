@@ -112,23 +112,46 @@ def record_item(
             keywords_count=excluded.keywords_count, has_ocr=excluded.has_ocr,
             model=excluded.model, timestamp=excluded.timestamp""",
         (
-            uuid, filename, media_type, int(is_icloud_only), status, error_message,
-            export_duration_s, llm_duration_s, write_duration_s, total_duration_s,
-            image_size_bytes, image_width, image_height, num_frames,
-            llm_retries, keywords_count, int(has_ocr), model,
+            uuid,
+            filename,
+            media_type,
+            int(is_icloud_only),
+            status,
+            error_message,
+            export_duration_s,
+            llm_duration_s,
+            write_duration_s,
+            total_duration_s,
+            image_size_bytes,
+            image_width,
+            image_height,
+            num_frames,
+            llm_retries,
+            keywords_count,
+            int(has_ocr),
+            model,
             datetime.now(timezone.utc).isoformat(),
         ),
     )
     conn.commit()
 
 
-def start_run(model: str, threads: int, dry_run: bool, photos_found: int, videos_found: int) -> int:
+def start_run(
+    model: str, threads: int, dry_run: bool, photos_found: int, videos_found: int
+) -> int:
     """Record the start of a batch run. Returns the run ID."""
     conn = _get_conn()
     cursor = conn.execute(
         """INSERT INTO run_metrics (started_at, model, threads, dry_run, photos_found, videos_found)
         VALUES (?, ?, ?, ?, ?, ?)""",
-        (datetime.now(timezone.utc).isoformat(), model, threads, int(dry_run), photos_found, videos_found),
+        (
+            datetime.now(timezone.utc).isoformat(),
+            model,
+            threads,
+            int(dry_run),
+            photos_found,
+            videos_found,
+        ),
     )
     conn.commit()
     return cursor.lastrowid
@@ -155,7 +178,15 @@ def finish_run(
             videos_failed = ?,
             avg_llm_duration_s = ?
         WHERE id = ?""",
-        (now, now, photos_processed, videos_processed, photos_failed, videos_failed,
-         avg_llm_duration_s, run_id),
+        (
+            now,
+            now,
+            photos_processed,
+            videos_processed,
+            photos_failed,
+            videos_failed,
+            avg_llm_duration_s,
+            run_id,
+        ),
     )
     conn.commit()

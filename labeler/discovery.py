@@ -61,5 +61,7 @@ def get_unprocessed_media(
 
     selected = items[:limit] if limit > 0 else items
     if selected:
-        logger.info(f"Selected {len(selected)} item(s), newest: {selected[0].original_filename}")
+        logger.info(
+            f"Selected {len(selected)} item(s), newest: {selected[0].original_filename}"
+        )
     return selected

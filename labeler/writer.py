@@ -11,13 +11,12 @@ _write_lock = threading.Lock()
 
 def _ensure_photos_app():
     """Check if Photos.app is running; open it if not."""
-    result = subprocess.run(
-        ["pgrep", "-x", "Photos"], capture_output=True
-    )
+    result = subprocess.run(["pgrep", "-x", "Photos"], capture_output=True)
     if result.returncode != 0:
         logger.info("Photos.app not running, opening...")
         subprocess.run(["open", "-a", "Photos"])
         import time
+
         time.sleep(3)
 
 

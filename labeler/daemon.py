@@ -30,8 +30,10 @@ def _generate_plist() -> dict:
         "Label": "com.image-labeler",
         "ProgramArguments": [
             _get_python_path(),
-            "-m", "labeler",
-            "run", "--loop",
+            "-m",
+            "labeler",
+            "run",
+            "--loop",
         ],
         "WorkingDirectory": working_dir,
         "RunAtLoad": True,
@@ -85,6 +87,7 @@ def status():
 def is_running() -> bool:
     result = subprocess.run(
         ["launchctl", "list"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     return "com.image-labeler" in result.stdout
