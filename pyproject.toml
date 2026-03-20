@@ -36,8 +36,11 @@ target-version = "py310"
 line-length = 88
 
 [tool.ruff.lint]
-select = ["F", "E", "W", "I", "UP", "B", "SIM", "C4", "RET", "PIE", "ERA", "ARG", "RUF", "PTH", "PLR"]
+select = ["F", "E", "W", "I", "UP", "B", "SIM", "C4", "RET", "PIE", "ERA", "ARG", "RUF", "PTH", "PLR", "D100", "D103"]
 ignore = ["PLR0913"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["labeler"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
