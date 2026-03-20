@@ -2,11 +2,21 @@
 
 ## What This Is
 
-A code quality initiative for the icloud-image-labeler CLI tool. The goal is to professionalize the codebase by enforcing consistent formatting with Ruff, cleaning up code structure (long functions, poor naming, dead code), and making every module readable and well-organized.
+A code quality initiative for the icloud-image-labeler CLI tool. Professionalized the codebase by enforcing consistent formatting with Ruff, decomposing long functions, cleaning up dead code, improving naming, and adding comprehensive documentation.
 
 ## Core Value
 
 The codebase should be clean, consistent, and easy to read — every module should look like it was written by one person following clear conventions.
+
+## Current State
+
+**v1.0 shipped 2026-03-20** — All code quality goals achieved.
+
+- 1,958 LOC across 14 Python modules in `labeler/`
+- Zero ruff violations (rules: E, F, W, I, SIM, C4, PTH, RET, PLR, C901, D100, D103)
+- All functions under 30 lines of logic, flat control flow with guard clauses
+- All public functions and modules have Google-style docstrings
+- All magic literals extracted to named constants
 
 ## Requirements
 
@@ -23,14 +33,15 @@ The codebase should be clean, consistent, and easy to read — every module shou
 - ✓ launchd daemon lifecycle management — existing
 - ✓ Interactive init wizard for first-run setup — existing
 - ✓ Homebrew tap distribution — existing
+- ✓ Ruff linting and formatting across all modules — v1.0
+- ✓ Break up long/complex functions into smaller, well-named pieces — v1.0
+- ✓ Improve variable, function, and module naming for clarity — v1.0
+- ✓ Remove dead code (unused imports, functions, commented-out blocks) — v1.0
+- ✓ All modules and public functions documented with docstrings — v1.0
 
 ### Active
 
-- [x] Ruff linting and formatting across all modules — Validated in Phase 1: Ruff Setup & Formatting
-- [x] Break up long/complex functions into smaller, well-named pieces — Validated in Phase 4: Structure Refactoring
-- [x] Improve variable, function, and module naming for clarity — Validated in Phase 5: Naming & Documentation
-- [x] Remove dead code (unused imports, functions, commented-out blocks) — Validated in Phase 2+3: Lint Fixes & Dead Code Removal
-- [ ] General cleanup — consistent patterns, logical organization within modules
+(None — next milestone TBD)
 
 ### Out of Scope
 
@@ -41,23 +52,26 @@ The codebase should be clean, consistent, and easy to read — every module shou
 
 ## Context
 
-The codebase is a Python 3.10+ macOS CLI tool (~8 modules in `labeler/`). It works well functionally but grew organically — some functions are long, naming is inconsistent, and there's likely dead code from iterative development. The codebase map identified several concerns in code structure that align with this cleanup effort.
+The codebase is a Python 3.10+ macOS CLI tool (14 modules in `labeler/`). After v1.0 code quality initiative, all modules are consistently formatted, well-documented, and structurally clean.
 
-Key modules: `cli.py`, `config.py`, `discovery.py`, `exporter.py`, `llm.py`, `processor.py`, `writer.py`, `metrics.py`, `daemon.py`, `init.py`
+Key modules: `cli.py`, `config.py`, `discovery.py`, `exporter.py`, `llm.py`, `processor.py`, `writer.py`, `metrics.py`, `daemon.py`, `init.py`, `checks.py`, `shutdown.py`
 
 ## Constraints
 
-- **No behavior changes**: All refactoring must preserve existing functionality exactly
+- **No behavior changes**: All refactoring preserved existing functionality exactly
 - **Tool**: Ruff for both linting and formatting (replaces black/isort/flake8)
-- **Python**: 3.10+ compatibility must be maintained
+- **Python**: 3.10+ compatibility maintained
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Ruff over Black+isort | All-in-one, extremely fast, modern standard | Validated Phase 1 |
-| No type annotations | Keep scope focused on formatting and structure | — Pending |
-| No CI/pre-commit | Can add separately later; this is about the code itself | — Pending |
+| Ruff over Black+isort | All-in-one, extremely fast, modern standard | ✓ Validated Phase 1 |
+| No type annotations | Keep scope focused on formatting and structure | ✓ Good — kept scope tight |
+| No CI/pre-commit | Can add separately later; this is about the code itself | ✓ Good — focused on code |
+| _BatchState dataclass for processor | Replace nonlocal closures with mutable state object | ✓ Validated Phase 4 |
+| Google-style docstrings | Match existing patterns already in codebase | ✓ Validated Phase 5 |
+| D100/D103 ruff enforcement | Prevent regression on documentation | ✓ Validated Phase 5 |
 
 ---
-*Last updated: 2026-03-20 after Phase 5 completion — all modules and public functions documented, variables renamed, ruff D100/D103 enforced. All 5 phases complete.*
+*Last updated: 2026-03-20 after v1.0 milestone*
