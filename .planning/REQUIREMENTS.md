@@ -33,14 +33,14 @@ Requirements for code quality initiative. Each maps to roadmap phases.
 
 ### Naming
 
-- [ ] **NAME-01**: Functions use clear verb-phrase names that describe their purpose
-- [ ] **NAME-02**: Variables use descriptive names (no single-letter names outside loops/comprehensions)
-- [ ] **NAME-03**: Parameters renamed for clarity where current names are ambiguous
+- [x] **NAME-01**: Functions use clear verb-phrase names that describe their purpose
+- [x] **NAME-02**: Variables use descriptive names (no single-letter names outside loops/comprehensions)
+- [x] **NAME-03**: Parameters renamed for clarity where current names are ambiguous
 
 ### Documentation
 
-- [ ] **DOCS-01**: All public functions have docstrings describing purpose and behavior
-- [ ] **DOCS-02**: All modules have module-level docstrings
+- [x] **DOCS-01**: All public functions have docstrings describing purpose and behavior
+- [x] **DOCS-02**: All modules have module-level docstrings
 
 ## v2 Requirements
 
@@ -86,11 +86,11 @@ Deferred to future release. Tracked but not in current roadmap.
 | STRC-04 | Phase 4 | Complete |
 | STRC-05 | Phase 4 | Complete |
 | STRC-06 | Phase 4 | Complete |
-| NAME-01 | Phase 5 | Pending |
-| NAME-02 | Phase 5 | Pending |
-| NAME-03 | Phase 5 | Pending |
-| DOCS-01 | Phase 5 | Pending |
-| DOCS-02 | Phase 5 | Pending |
+| NAME-01 | Phase 5 | Complete |
+| NAME-02 | Phase 5 | Complete |
+| NAME-03 | Phase 5 | Complete |
+| DOCS-01 | Phase 5 | Complete |
+| DOCS-02 | Phase 5 | Complete |
 
 **Coverage:**
 - v1 requirements: 20 total
