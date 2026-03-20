@@ -23,6 +23,7 @@ def request_shutdown(signum=None, _frame=None):
 
 
 def is_shutting_down() -> bool:
+    """Return True if a graceful shutdown has been requested."""
     return _shutdown_event.is_set()
 
 

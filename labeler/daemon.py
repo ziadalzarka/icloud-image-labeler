@@ -1,3 +1,5 @@
+"""launchd Launch Agent lifecycle management."""
+
 import logging
 import plistlib
 import subprocess
@@ -45,6 +47,7 @@ def _generate_plist() -> dict:
 
 
 def start():
+    """Install and load the launchd Launch Agent."""
     if is_running():
         print("Daemon is already running.")
         return
@@ -61,6 +64,7 @@ def start():
 
 
 def stop():
+    """Unload and remove the launchd Launch Agent."""
     if not PLIST_PATH.exists():
         print("Daemon is not running (no plist found).")
         return
@@ -71,11 +75,13 @@ def stop():
 
 
 def restart():
+    """Stop and restart the launchd Launch Agent."""
     stop()
     start()
 
 
 def status():
+    """Print whether the Launch Agent is currently running."""
     if is_running():
         print("Daemon is running.")
     else:
@@ -83,6 +89,7 @@ def status():
 
 
 def is_running() -> bool:
+    """Check if the Launch Agent is loaded in launchctl."""
     result = subprocess.run(
         ["launchctl", "list"],
         capture_output=True,

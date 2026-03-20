@@ -1,3 +1,5 @@
+"""Configuration file management for ~/.image-labeler/config.json."""
+
 import json
 from pathlib import Path
 
@@ -35,16 +37,19 @@ def ensure_config() -> dict:
 
 
 def load_config() -> dict:
+    """Load configuration from disk, creating defaults if the file is missing."""
     return ensure_config()
 
 
 def save_config(config: dict):
+    """Write configuration dictionary to disk, filtering to known keys."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     filtered = {k: v for k, v in config.items() if k in VALID_KEYS}
     CONFIG_PATH.write_text(json.dumps(filtered, indent=2) + "\n")
 
 
 def set_value(key: str, value: str):
+    """Update a single config key, coercing the string value to the correct type."""
     if key not in VALID_KEYS:
         raise ValueError(
             f"Unknown config key: {key}. Valid keys: {', '.join(sorted(VALID_KEYS))}"
@@ -62,4 +67,5 @@ def set_value(key: str, value: str):
 
 
 def reset_config():
+    """Reset configuration to default values."""
     save_config(DEFAULTS)

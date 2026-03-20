@@ -1,3 +1,5 @@
+"""OpenAI-compatible LLM client for photo and video labeling."""
+
 import json
 import logging
 import re
@@ -45,6 +47,7 @@ Respond ONLY with valid JSON in this exact format:
 
 
 def create_client(base_url: str, api_key: str = "") -> OpenAI:
+    """Create an OpenAI client configured for the given endpoint."""
     return OpenAI(
         base_url=base_url, api_key=api_key or "not-needed", timeout=LLM_TIMEOUT
     )

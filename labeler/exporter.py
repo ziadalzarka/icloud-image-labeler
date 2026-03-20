@@ -1,3 +1,5 @@
+"""HEIC-to-JPEG photo conversion and video frame extraction."""
+
 import base64
 import logging
 import subprocess

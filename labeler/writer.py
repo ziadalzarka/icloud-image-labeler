@@ -1,3 +1,5 @@
+"""PhotoScript metadata writes to macOS Photos.app."""
+
 import logging
 import subprocess
 import threading

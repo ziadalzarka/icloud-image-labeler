@@ -1,3 +1,5 @@
+"""Argparse CLI with run, daemon, config, and metrics subcommands."""
+
 import argparse
 import json
 import logging
@@ -236,6 +238,7 @@ def _build_parser():
 
 
 def main():
+    """Parse CLI arguments and dispatch to the appropriate subcommand."""
     parser, run_parser = _build_parser()
     args = parser.parse_args()
     cfg = config.load_config()

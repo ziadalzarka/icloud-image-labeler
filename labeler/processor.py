@@ -1,3 +1,5 @@
+"""Batch orchestration: parallel photo processing, sequential video processing."""
+
 import logging
 import threading
 import time
@@ -77,6 +79,10 @@ class ItemFailureTracker:
         self._lock = threading.Lock()
 
     def record_failure(self, uuid: str, filename: str):
+        """Record a failure for the given item.
+
+        Raises MaxFailuresExceeded if the failure limit is reached.
+        """
         with self._lock:
             self._counts[uuid] += 1
             count = self._counts[uuid]
@@ -451,26 +457,26 @@ def _process_photos_parallel(
     """Process photos: export on main thread, LLM+write in worker threads."""
     pool = ThreadPoolExecutor(max_workers=threads)
     in_flight: dict = {}  # future -> PhotoInfo
-    i = 0
+    photo_idx = 0
     try:
-        while (i < len(state.photos) or in_flight) and not is_shutting_down():
+        while (photo_idx < len(state.photos) or in_flight) and not is_shutting_down():
             _collect_completed_futures(in_flight, state)
 
             # Backpressure: wait if all worker slots are busy
-            if i < len(state.photos) and len(in_flight) >= threads:
+            if photo_idx < len(state.photos) and len(in_flight) >= threads:
                 time.sleep(_POLL_INTERVAL)
                 continue
 
             # Drain remaining futures
-            if i >= len(state.photos):
+            if photo_idx >= len(state.photos):
                 time.sleep(_POLL_INTERVAL)
                 continue
 
-            p = state.photos[i]
-            i += 1
+            photo = state.photos[photo_idx]
+            photo_idx += 1
 
             _export_and_submit_photo(
-                p,
+                photo,
                 pool,
                 in_flight,
                 state,
@@ -482,7 +488,7 @@ def _process_photos_parallel(
                 api_key,
                 discover_fn,
                 refresh_interval,
-                i,
+                photo_idx,
             )
 
         _drain_remaining_futures(in_flight, state)
@@ -503,10 +509,10 @@ def _process_videos_sequential(
     refresh_interval,
 ):
     """Process videos sequentially on the main thread."""
-    i = 0
-    while i < len(state.videos) and not is_shutting_down():
-        video = state.videos[i]
-        i += 1
+    video_idx = 0
+    while video_idx < len(state.videos) and not is_shutting_down():
+        video = state.videos[video_idx]
+        video_idx += 1
         state.processed += 1
 
         _maybe_refresh(
@@ -514,7 +520,7 @@ def _process_videos_sequential(
             discover_fn,
             refresh_interval,
             photo_insert_idx=len(state.photos),
-            video_insert_idx=i,
+            video_insert_idx=video_idx,
         )
 
         try:

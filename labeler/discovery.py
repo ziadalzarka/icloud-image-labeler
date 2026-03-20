@@ -1,3 +1,5 @@
+"""Query macOS Photos library for unprocessed media via osxphotos."""
+
 import logging
 from datetime import datetime, timedelta
 

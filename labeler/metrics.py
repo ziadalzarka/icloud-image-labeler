@@ -1,3 +1,5 @@
+"""SQLite metrics database for tracking processing runs and items."""
+
 import logging
 import sqlite3
 import threading
