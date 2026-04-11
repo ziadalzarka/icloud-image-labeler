@@ -10,7 +10,7 @@ DEFAULTS = {
     "base_url": "http://localhost:1234/v1",
     "api_key": "",
     "model": "qwen/qwen3.5-9b",
-    "poll_interval": 300,
+    "poll_interval": 21600,
     "limit_per_cycle": 0,
     "days": 0,
     "to_days": 0,
