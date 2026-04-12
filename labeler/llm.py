@@ -63,14 +63,21 @@ def create_client(base_url: str, api_key: str = "") -> OpenAI:
     )
 
 
+_THINK_TAG_RE = re.compile(
+    r"<\|?channel\|?>.*?<\|?/?channel\|?>"
+    r"|<think>.*?</think>"
+    r"|<start_of_turn>.*?<end_of_turn>",
+    re.DOTALL,
+)
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+
+
 def _parse_response(raw: str) -> dict:
     """Strip thinking blocks, code fences, and parse JSON."""
-    # Strip <think>...</think> blocks (Qwen thinking mode)
-    cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-    # Strip markdown code fences
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[1]
-        cleaned = cleaned.rsplit("```", 1)[0].strip()
+    cleaned = _THINK_TAG_RE.sub("", raw).strip()
+    fence = _FENCE_RE.search(cleaned)
+    if fence:
+        cleaned = fence.group(1).strip()
     return json.loads(cleaned)
 
 
