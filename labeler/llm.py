@@ -1,5 +1,6 @@
 """OpenAI-compatible LLM client for photo and video labeling."""
 
+import hashlib
 import json
 import logging
 import re
@@ -44,6 +45,15 @@ Respond ONLY with valid JSON in this exact format:
   "description": "One sentence describing the video.",
   "ocr_text": "any visible text"
 }"""
+
+
+def model_tag(model: str) -> str:
+    """Opaque keyword identifying the model that processed a photo.
+
+    Uses a short sha256 prefix so it won't surface in user keyword searches
+    but still lets discovery detect model changes for reindexing.
+    """
+    return f"m:{hashlib.sha256(model.encode()).hexdigest()[:8]}"
 
 
 def create_client(base_url: str, api_key: str = "") -> OpenAI:

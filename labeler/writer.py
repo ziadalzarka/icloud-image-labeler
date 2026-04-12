@@ -6,6 +6,8 @@ import threading
 
 import photoscript
 
+from labeler.llm import model_tag
+
 logger = logging.getLogger(__name__)
 
 _write_lock = threading.Lock()
@@ -24,8 +26,9 @@ def _ensure_photos_app():
         time.sleep(PHOTOS_APP_STARTUP_WAIT)
 
 
-def write_metadata(photo_uuid: str, labels: dict, write: bool = True):
+def write_metadata(photo_uuid: str, labels: dict, model: str, write: bool = True):
     """Write keywords, title, and description to Photos.app."""
+    tag = model_tag(model)
     if not write:
         logger.info("[DRY RUN] Would write:")
         logger.info(f"  Title: {labels.get('title', '')}")
@@ -33,6 +36,7 @@ def write_metadata(photo_uuid: str, labels: dict, write: bool = True):
         logger.info(f"  Keywords: {', '.join(labels.get('keywords', []))}")
         if labels.get("ocr_text"):
             logger.info(f"  OCR Text: {labels['ocr_text']}")
+        logger.info(f"  Model tag: {tag}")
         return
 
     _ensure_photos_app()
@@ -40,6 +44,7 @@ def write_metadata(photo_uuid: str, labels: dict, write: bool = True):
     keywords = list(labels.get("keywords", []))
     if labels.get("ocr_text"):
         keywords.append(f"ocr:{labels['ocr_text']}")
+    keywords.append(tag)
 
     with _write_lock:
         logger.debug("Writing metadata to Photos.app...")

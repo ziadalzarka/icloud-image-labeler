@@ -115,7 +115,7 @@ def _label_and_write_photo(
     llm_duration = time.monotonic() - t_llm
 
     t_write = time.monotonic()
-    write_metadata(item.uuid, labels, write=write)
+    write_metadata(item.uuid, labels, model=model, write=write)
     write_duration = time.monotonic() - t_write
 
     metrics.record_item(
@@ -208,7 +208,7 @@ def _process_single_video(
     llm_duration = time.monotonic() - t_llm
 
     t_write = time.monotonic()
-    write_metadata(item.uuid, labels, write=write)
+    write_metadata(item.uuid, labels, model=model, write=write)
     write_duration = time.monotonic() - t_write
 
     metrics.record_item(
