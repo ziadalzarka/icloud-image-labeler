@@ -159,11 +159,25 @@ def _metrics_cmd(args):
         print(metrics.DB_PATH)
     elif action == "serve":
         import subprocess as sp
+        from importlib.resources import as_file, files
 
         port = args.port or DEFAULT_DATASETTE_PORT
-        print(f"Starting Datasette on http://localhost:{port}")
-        print(f"Database: {metrics.DB_PATH}")
-        sp.run(["datasette", "serve", metrics.DB_PATH, "-p", str(port)])
+        dashboard_resource = files("labeler").joinpath("dashboard.yaml")
+        with as_file(dashboard_resource) as dashboard_path:
+            print(f"Starting Datasette on http://localhost:{port}")
+            print(f"Dashboard:  http://localhost:{port}/-/dashboards/labeler")
+            print(f"Database:   {metrics.DB_PATH}")
+            sp.run(
+                [
+                    "datasette",
+                    "serve",
+                    metrics.DB_PATH,
+                    "-p",
+                    str(port),
+                    "-m",
+                    str(dashboard_path),
+                ]
+            )
 
 
 def _build_run_parser(subparsers):

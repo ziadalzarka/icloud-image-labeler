@@ -1,0 +1,236 @@
+title: iCloud Image Labeler
+description: Processing metrics
+plugins:
+  datasette-dashboards:
+    labeler:
+      title: Labeler Dashboard
+      description: Throughput, latency, and reliability metrics for the labeler
+      layout:
+        - [total_items, success_rate, avg_llm_duration, total_runs]
+        - [duration_over_time, duration_over_time, duration_over_time, duration_over_time]
+        - [llm_duration_over_time, llm_duration_over_time, llm_duration_over_time, llm_duration_over_time]
+        - [items_per_day, items_per_day, phase_breakdown, phase_breakdown]
+        - [status_split, media_split, retries_histogram, models_by_latency]
+        - [runs_timeline, runs_timeline, runs_timeline, runs_timeline]
+      charts:
+        total_items:
+          title: Items recorded (24h)
+          db: metrics
+          query: |
+            SELECT COUNT(*) AS value
+            FROM item_metrics
+            WHERE timestamp >= datetime('now', '-24 hours')
+          library: metric
+          display:
+            field: value
+        success_rate:
+          title: Success rate (24h)
+          db: metrics
+          query: |
+            SELECT ROUND(100.0 *
+              SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) /
+              NULLIF(COUNT(*), 0), 1) AS value
+            FROM item_metrics
+            WHERE timestamp >= datetime('now', '-24 hours')
+          library: metric
+          display:
+            field: value
+            suffix: "%"
+        avg_llm_duration:
+          title: Avg LLM duration (24h)
+          db: metrics
+          query: |
+            SELECT ROUND(AVG(llm_duration_s), 2) AS value
+            FROM item_metrics
+            WHERE llm_duration_s IS NOT NULL
+              AND timestamp >= datetime('now', '-24 hours')
+          library: metric
+          display:
+            field: value
+            suffix: s
+        total_runs:
+          title: Batch runs (24h)
+          db: metrics
+          query: |
+            SELECT COUNT(*) AS value
+            FROM run_metrics
+            WHERE started_at >= datetime('now', '-24 hours')
+          library: metric
+          display:
+            field: value
+        duration_over_time:
+          title: Avg total duration per item (24h, hourly)
+          db: metrics
+          query: |
+            SELECT
+              strftime('%Y-%m-%dT%H:00:00Z', timestamp) AS hour,
+              media_type,
+              AVG(total_duration_s) AS avg_duration_s
+            FROM item_metrics
+            WHERE status = 'success'
+              AND total_duration_s IS NOT NULL
+              AND timestamp >= datetime('now', '-24 hours')
+            GROUP BY hour, media_type
+            ORDER BY hour
+          library: vega-lite
+          display:
+            mark: { type: line, point: true, tooltip: true, interpolate: monotone }
+            encoding:
+              x: { field: hour, type: temporal, title: Hour }
+              y: { field: avg_duration_s, type: quantitative, title: Avg seconds }
+              color: { field: media_type, type: nominal, title: Media }
+        llm_duration_over_time:
+          title: Avg LLM duration by model (24h, hourly)
+          db: metrics
+          query: |
+            SELECT
+              strftime('%Y-%m-%dT%H:00:00Z', timestamp) AS hour,
+              COALESCE(model, 'unknown') AS model,
+              AVG(llm_duration_s) AS avg_llm_s
+            FROM item_metrics
+            WHERE llm_duration_s IS NOT NULL
+              AND timestamp >= datetime('now', '-24 hours')
+            GROUP BY hour, model
+            ORDER BY hour
+          library: vega-lite
+          display:
+            mark: { type: line, point: true, tooltip: true, interpolate: monotone }
+            encoding:
+              x: { field: hour, type: temporal, title: Hour }
+              y: { field: avg_llm_s, type: quantitative, title: Avg seconds }
+              color: { field: model, type: nominal }
+        items_per_day:
+          title: Items processed per hour (24h)
+          db: metrics
+          query: |
+            SELECT
+              strftime('%Y-%m-%dT%H:00:00Z', timestamp) AS hour,
+              status,
+              COUNT(*) AS count
+            FROM item_metrics
+            WHERE timestamp >= datetime('now', '-24 hours')
+            GROUP BY hour, status
+            ORDER BY hour
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: hour, type: temporal, title: Hour }
+              y: { field: count, type: quantitative, aggregate: sum, title: Items }
+              color:
+                field: status
+                type: nominal
+                scale:
+                  domain: [success, failed, skipped]
+                  range: ["#4c9a2a", "#c0392b", "#7f8c8d"]
+        phase_breakdown:
+          title: Avg phase duration (export / LLM / write, 24h)
+          db: metrics
+          query: |
+            SELECT
+              strftime('%Y-%m-%dT%H:00:00Z', timestamp) AS hour,
+              ROUND(AVG(export_duration_s), 3) AS export,
+              ROUND(AVG(llm_duration_s), 3) AS llm,
+              ROUND(AVG(write_duration_s), 3) AS write
+            FROM item_metrics
+            WHERE status = 'success'
+              AND timestamp >= datetime('now', '-24 hours')
+            GROUP BY hour
+            ORDER BY hour
+          library: vega-lite
+          display:
+            transform:
+              - fold: [export, llm, write]
+                as: [phase, seconds]
+            mark: { type: area, tooltip: true }
+            encoding:
+              x: { field: hour, type: temporal, title: Hour }
+              y:
+                field: seconds
+                type: quantitative
+                aggregate: sum
+                stack: true
+                title: Avg seconds
+              color: { field: phase, type: nominal }
+        status_split:
+          title: Status split (24h)
+          db: metrics
+          query: |
+            SELECT status, COUNT(*) AS count
+            FROM item_metrics
+            WHERE timestamp >= datetime('now', '-24 hours')
+            GROUP BY status
+          library: vega-lite
+          display:
+            mark: { type: arc, tooltip: true }
+            encoding:
+              theta: { field: count, type: quantitative }
+              color: { field: status, type: nominal }
+        media_split:
+          title: Media type (24h)
+          db: metrics
+          query: |
+            SELECT media_type, COUNT(*) AS count
+            FROM item_metrics
+            WHERE timestamp >= datetime('now', '-24 hours')
+            GROUP BY media_type
+          library: vega-lite
+          display:
+            mark: { type: arc, tooltip: true }
+            encoding:
+              theta: { field: count, type: quantitative }
+              color: { field: media_type, type: nominal }
+        retries_histogram:
+          title: LLM retries (24h)
+          db: metrics
+          query: |
+            SELECT llm_retries, COUNT(*) AS count
+            FROM item_metrics
+            WHERE timestamp >= datetime('now', '-24 hours')
+            GROUP BY llm_retries
+            ORDER BY llm_retries
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: llm_retries, type: ordinal, title: Retries }
+              y: { field: count, type: quantitative }
+        models_by_latency:
+          title: Avg LLM latency by model (24h)
+          db: metrics
+          query: |
+            SELECT
+              COALESCE(model, 'unknown') AS model,
+              ROUND(AVG(llm_duration_s), 2) AS avg_s,
+              COUNT(*) AS items
+            FROM item_metrics
+            WHERE llm_duration_s IS NOT NULL
+              AND timestamp >= datetime('now', '-24 hours')
+            GROUP BY model
+            ORDER BY avg_s DESC
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: avg_s, type: quantitative, title: Avg seconds }
+              y: { field: model, type: nominal, sort: "-x" }
+        runs_timeline:
+          title: Batch runs — items processed and duration (24h)
+          db: metrics
+          query: |
+            SELECT
+              started_at,
+              (photos_processed + videos_processed) AS items,
+              total_duration_s,
+              CASE WHEN (photos_failed + videos_failed) > 0 THEN 'with failures' ELSE 'clean' END AS outcome
+            FROM run_metrics
+            WHERE finished_at IS NOT NULL
+              AND started_at >= datetime('now', '-24 hours')
+            ORDER BY started_at
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: started_at, type: temporal, title: Run start }
+              y: { field: items, type: quantitative, title: Items processed }
+              color: { field: outcome, type: nominal }

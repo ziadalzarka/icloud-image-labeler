@@ -23,7 +23,11 @@ dependencies = [
     "Pillow",
     "pillow-heif",
     "datasette",
+    "datasette-dashboards",
 ]
+
+[tool.setuptools.package-data]
+labeler = ["dashboard.yaml"]
 
 [project.scripts]
 icloud-image-labeler = "labeler.cli:main"
