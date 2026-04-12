@@ -7,6 +7,8 @@ import osxphotos
 
 logger = logging.getLogger(__name__)
 
+_MODEL_TAG_PREFIX = "m:"
+
 
 def get_unprocessed_media(
     limit: int = 0,
@@ -14,14 +16,22 @@ def get_unprocessed_media(
     to_days: int = 0,
     photo: bool = True,
     video: bool = True,
+    reindex: bool = False,
+    expected_model_tag: str | None = None,
 ) -> list[osxphotos.PhotoInfo]:
-    """Query Photos library for unprocessed media (no keywords, not hidden).
+    """Query Photos library for unprocessed media.
 
     Args:
         limit: Max items to return. 0 = no limit (all unprocessed).
         days_back: Look back N days from now. 0 = no date filter (all photos).
         to_days: Skip the most recent N days (e.g. 7 = exclude last 7 days).
+        reindex: If True, include items whose model tag is missing or differs
+            from ``expected_model_tag``. Requires ``expected_model_tag``.
+        expected_model_tag: Current model tag (``m:<hash>``) used when
+            ``reindex`` is True.
     """
+    if reindex and not expected_model_tag:
+        raise ValueError("reindex=True requires expected_model_tag")
     logger.info("Loading Photos library...")
     photosdb = osxphotos.PhotosDB()
 
@@ -39,8 +49,19 @@ def get_unprocessed_media(
     recent = photosdb.photos(from_date=from_date, to_date=to_date)
     logger.debug(f"Found {len(recent)} items in date range")
 
-    # Filter: no keywords, not hidden
-    items = [p for p in recent if not p.keywords and not p.hidden]
+    if reindex:
+        # Include items missing the expected model tag (stale or never processed).
+        def _needs_reindex(p: osxphotos.PhotoInfo) -> bool:
+            if p.hidden:
+                return False
+            if expected_model_tag in (p.keywords or ()):
+                return False
+            return True
+
+        items = [p for p in recent if _needs_reindex(p)]
+    else:
+        # Filter: no keywords, not hidden
+        items = [p for p in recent if not p.keywords and not p.hidden]
 
     # Filter by media type
     if photo and not video:
@@ -53,8 +74,9 @@ def get_unprocessed_media(
     photo_count = sum(1 for p in items if p.isphoto)
     video_count = sum(1 for p in items if not p.isphoto)
     missing_count = sum(1 for p in items if p.ismissing)
+    label = "reindex candidates" if reindex else "unprocessed items"
     logger.info(
-        f"Found {len(items)} unprocessed items "
+        f"Found {len(items)} {label} "
         f"({photo_count} photos, {video_count} videos, {missing_count} iCloud-only)"
     )
 

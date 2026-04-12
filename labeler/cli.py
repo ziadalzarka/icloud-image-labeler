@@ -10,6 +10,7 @@ from labeler import config, daemon, metrics
 from labeler.checks import check_dependencies
 from labeler.discovery import get_unprocessed_media
 from labeler.init import run_init
+from labeler.llm import model_tag
 from labeler.processor import process_batch
 from labeler.shutdown import install_handlers as install_signal_handlers
 from labeler.shutdown import is_shutting_down
@@ -56,6 +57,7 @@ def _resolve_config(args, cfg):
         resolved["write"] = False
 
     resolved["loop"] = args.loop
+    resolved["reindex"] = bool(args.reindex)
     resolved["poll_interval"] = cfg["poll_interval"]
     resolved["max_dimension"] = cfg["max_dimension"]
     return resolved
@@ -64,6 +66,9 @@ def _resolve_config(args, cfg):
 def _run(args, cfg):
     """One-shot or loop processing."""
     rc = _resolve_config(args, cfg)
+    expected_tag = model_tag(rc["model"]) if rc["reindex"] else None
+    if rc["reindex"]:
+        logger.info(f"Reindex mode: current model tag {expected_tag}")
 
     def discover():
         return get_unprocessed_media(
@@ -72,6 +77,8 @@ def _run(args, cfg):
             to_days=rc["to_days"],
             photo=rc["photo"],
             video=rc["video"],
+            reindex=rc["reindex"],
+            expected_model_tag=expected_tag,
         )
 
     try:
@@ -201,6 +208,12 @@ def _build_run_parser(subparsers):
         "--uuid", nargs="+", default=None, help="Process specific photo UUIDs"
     )
     run_parser.add_argument("--loop", action="store_true", default=False)
+    run_parser.add_argument(
+        "--reindex",
+        action="store_true",
+        default=False,
+        help="Reprocess items whose model tag (m:...) is missing or stale",
+    )
     run_parser.add_argument("-v", "--verbose", action="store_true", default=False)
     return run_parser
 
