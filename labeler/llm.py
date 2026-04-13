@@ -4,6 +4,8 @@ import hashlib
 import json
 import logging
 import re
+import threading
+from dataclasses import dataclass
 
 from openai import OpenAI
 
@@ -63,6 +65,53 @@ def create_client(base_url: str, api_key: str = "") -> OpenAI:
     )
 
 
+@dataclass(frozen=True)
+class Server:
+    """One LLM backend: endpoint URL, model id, and optional API key."""
+
+    base_url: str
+    model: str
+    api_key: str = ""
+
+
+class ServerPool:
+    """Thread-safe round-robin pool of LLM servers.
+
+    Each call to `next()` hands out the following server in round-robin
+    order, so crashed servers get rotated away on retry.
+    """
+
+    def __init__(self, servers: list[Server]):
+        if not servers:
+            raise ValueError("ServerPool requires at least one server")
+        self._servers = list(servers)
+        self._idx = 0
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        return len(self._servers)
+
+    def next(self) -> Server:
+        with self._lock:
+            server = self._servers[self._idx % len(self._servers)]
+            self._idx += 1
+            return server
+
+    def servers(self) -> list[Server]:
+        return list(self._servers)
+
+    def models(self) -> list[str]:
+        """Distinct model ids across the pool, in first-seen order."""
+        seen: dict[str, None] = {}
+        for s in self._servers:
+            seen.setdefault(s.model, None)
+        return list(seen.keys())
+
+    def model_tags(self) -> set[str]:
+        """All model tags any server in the pool would stamp."""
+        return {model_tag(m) for m in self.models()}
+
+
 _THINK_TAG_RE = re.compile(
     r"<\|?channel\|?>.*?<\|?/?channel\|?>"
     r"|<think>.*?</think>"
@@ -118,7 +167,7 @@ def label_photo(
     client: OpenAI, model: str, image_b64: str, filename: str
 ) -> tuple[dict, int]:
     """Send a photo to the LLM for labeling. Returns (labels, retries)."""
-    logger.info(f"Labeling photo: {filename}")
+    logger.debug(f"Labeling photo: {filename}")
     messages = [
         {"role": "system", "content": PHOTO_SYSTEM_PROMPT},
         {
@@ -141,7 +190,7 @@ def label_video(
     client: OpenAI, model: str, frames_b64: list[str], filename: str
 ) -> tuple[dict, int]:
     """Send video frames to the LLM for labeling. Returns (labels, retries)."""
-    logger.info(f"Labeling video: {filename} ({len(frames_b64)} frames)")
+    logger.debug(f"Labeling video: {filename} ({len(frames_b64)} frames)")
     image_content = [
         {
             "type": "text",

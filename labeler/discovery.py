@@ -17,7 +17,7 @@ def get_unprocessed_media(
     photo: bool = True,
     video: bool = True,
     reindex: bool = False,
-    expected_model_tag: str | None = None,
+    expected_model_tags: set[str] | None = None,
 ) -> list[osxphotos.PhotoInfo]:
     """Query Photos library for unprocessed media.
 
@@ -25,13 +25,13 @@ def get_unprocessed_media(
         limit: Max items to return. 0 = no limit (all unprocessed).
         days_back: Look back N days from now. 0 = no date filter (all photos).
         to_days: Skip the most recent N days (e.g. 7 = exclude last 7 days).
-        reindex: If True, include items whose model tag is missing or differs
-            from ``expected_model_tag``. Requires ``expected_model_tag``.
-        expected_model_tag: Current model tag (``m:<hash>``) used when
-            ``reindex`` is True.
+        reindex: If True, include items whose model tag matches none of
+            ``expected_model_tags`` (stale or never processed).
+        expected_model_tags: Set of valid model tags (``m:<hash>``). An item
+            is considered up-to-date if any of its keywords appears here.
     """
-    if reindex and not expected_model_tag:
-        raise ValueError("reindex=True requires expected_model_tag")
+    if reindex and not expected_model_tags:
+        raise ValueError("reindex=True requires expected_model_tags")
     logger.info("Loading Photos library...")
     photosdb = osxphotos.PhotosDB()
 
@@ -50,11 +50,14 @@ def get_unprocessed_media(
     logger.debug(f"Found {len(recent)} items in date range")
 
     if reindex:
-        # Include items missing the expected model tag (stale or never processed).
+        tags = expected_model_tags or set()
+
+        # Include items whose model tag is missing or not in the pool's tag set.
         def _needs_reindex(p: osxphotos.PhotoInfo) -> bool:
             if p.hidden:
                 return False
-            if expected_model_tag in (p.keywords or ()):
+            keywords = set(p.keywords or ())
+            if keywords & tags:
                 return False
             return True
 

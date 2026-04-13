@@ -6,13 +6,14 @@ import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 import osxphotos
 from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 from labeler import metrics
 from labeler.exporter import export_photo_as_base64, export_video_frames_as_base64
-from labeler.llm import create_client, label_photo, label_video
+from labeler.llm import ServerPool, create_client, label_photo, label_video
 from labeler.shutdown import is_shutting_down
 from labeler.shutdown import wait as shutdown_wait
 from labeler.writer import write_metadata
@@ -56,8 +57,17 @@ def _format_date(item: osxphotos.PhotoInfo) -> str:
     return dt.strftime("%Y-%m-%d") if dt else "?"
 
 
+def _server_label(server) -> str:
+    """Short '[host model]' tag for per-item logs."""
+    host = urlparse(server.base_url).hostname or server.base_url
+    return f"[{host} {server.model}]"
+
+
 def _record_error(
-    item: osxphotos.PhotoInfo, media_type: str, model: str, error: Exception
+    item: osxphotos.PhotoInfo,
+    media_type: str,
+    model: str | None,
+    error: Exception,
 ):
     """Record a failed item in metrics."""
     metrics.record_item(
@@ -101,21 +111,22 @@ def _label_and_write_photo(
     image_b64: str,
     export_meta: dict,
     export_duration: float,
-    base_url: str,
-    model: str,
+    server,
     write: bool,
-    api_key: str = "",
 ) -> None:
     """LLM label + write metadata for an already-exported photo."""
     t_start = time.monotonic()
-    client = create_client(base_url, api_key=api_key)
+    client = create_client(server.base_url, api_key=server.api_key)
 
+    logger.info(f"{_server_label(server)} Labeling photo: {item.original_filename}")
     t_llm = time.monotonic()
-    labels, llm_retries = label_photo(client, model, image_b64, item.original_filename)
+    labels, llm_retries = label_photo(
+        client, server.model, image_b64, item.original_filename
+    )
     llm_duration = time.monotonic() - t_llm
 
     t_write = time.monotonic()
-    write_metadata(item.uuid, labels, model=model, write=write)
+    write_metadata(item.uuid, labels, model=server.model, write=write)
     write_duration = time.monotonic() - t_write
 
     metrics.record_item(
@@ -134,7 +145,7 @@ def _label_and_write_photo(
         llm_retries=llm_retries,
         keywords_count=len(labels.get("keywords", [])),
         has_ocr=bool(labels.get("ocr_text")),
-        model=model,
+        model=server.model,
     )
 
 
@@ -143,24 +154,23 @@ def _label_photo_with_retry(
     image_b64,
     export_meta,
     export_duration,
-    base_url,
-    model,
+    pool: ServerPool,
     write,
     tracker,
-    api_key="",
 ):
     attempt = 0
+    last_model: str | None = None
     while True:
+        server = pool.next()
+        last_model = server.model
         try:
             _label_and_write_photo(
                 item,
                 image_b64,
                 export_meta,
                 export_duration,
-                base_url,
-                model,
+                server,
                 write,
-                api_key=api_key,
             )
             return
         except Exception as e:
@@ -168,13 +178,14 @@ def _label_photo_with_retry(
                 delay = _retry_delay(attempt)
                 attempt += 1
                 logger.warning(
-                    f"Retryable error (attempt {attempt}): {e}. Retrying in {delay}s..."
+                    f"Retryable error on {server.base_url} "
+                    f"(attempt {attempt}): {e}. Retrying in {delay}s..."
                 )
                 if shutdown_wait(delay):
                     raise
                 continue
             tracker.record_failure(item.uuid, item.original_filename)
-            _record_error(item, "photo", model, e)
+            _record_error(item, "photo", last_model, e)
             raise
 
 
@@ -183,16 +194,14 @@ def _label_photo_with_retry(
 
 def _process_single_video(
     item: osxphotos.PhotoInfo,
-    base_url: str,
-    model: str,
+    server,
     video_frames: int,
     max_dimension: int,
     write: bool,
-    api_key: str = "",
 ) -> None:
     """Export frames, label, write metadata, record metrics for one video."""
     t_start = time.monotonic()
-    client = create_client(base_url, api_key=api_key)
+    client = create_client(server.base_url, api_key=server.api_key)
 
     t_export = time.monotonic()
     frames_b64, export_meta = export_video_frames_as_base64(
@@ -203,12 +212,18 @@ def _process_single_video(
     if not frames_b64:
         raise RuntimeError(f"No frames extracted from {item.original_filename}")
 
+    logger.info(
+        f"{_server_label(server)} Labeling video: "
+        f"{item.original_filename} ({len(frames_b64)} frames)"
+    )
     t_llm = time.monotonic()
-    labels, llm_retries = label_video(client, model, frames_b64, item.original_filename)
+    labels, llm_retries = label_video(
+        client, server.model, frames_b64, item.original_filename
+    )
     llm_duration = time.monotonic() - t_llm
 
     t_write = time.monotonic()
-    write_metadata(item.uuid, labels, model=model, write=write)
+    write_metadata(item.uuid, labels, model=server.model, write=write)
     write_duration = time.monotonic() - t_write
 
     metrics.record_item(
@@ -228,24 +243,25 @@ def _process_single_video(
         llm_retries=llm_retries,
         keywords_count=len(labels.get("keywords", [])),
         has_ocr=bool(labels.get("ocr_text")),
-        model=model,
+        model=server.model,
     )
 
 
 def _process_video_with_retry(
-    item, base_url, model, video_frames, max_dimension, write, tracker, api_key=""
+    item, pool: ServerPool, video_frames, max_dimension, write, tracker
 ):
     attempt = 0
+    last_model: str | None = None
     while True:
+        server = pool.next()
+        last_model = server.model
         try:
             _process_single_video(
                 item,
-                base_url,
-                model,
+                server,
                 video_frames,
                 max_dimension,
                 write,
-                api_key=api_key,
             )
             return
         except Exception as e:
@@ -253,13 +269,14 @@ def _process_video_with_retry(
                 delay = _retry_delay(attempt)
                 attempt += 1
                 logger.warning(
-                    f"Retryable error (attempt {attempt}): {e}. Retrying in {delay}s..."
+                    f"Retryable error on {server.base_url} "
+                    f"(attempt {attempt}): {e}. Retrying in {delay}s..."
                 )
                 if shutdown_wait(delay):
                     raise
                 continue
             tracker.record_failure(item.uuid, item.original_filename)
-            _record_error(item, "video", model, e)
+            _record_error(item, "video", last_model, e)
             raise
 
 
@@ -360,15 +377,13 @@ def _collect_completed_futures(in_flight: dict, state: _BatchState) -> None:
 
 def _export_and_submit_photo(
     photo,
-    pool,
+    executor,
     in_flight,
     state,
-    model,
+    server_pool: ServerPool,
     max_dimension,
-    base_url,
     write,
     tracker,
-    api_key,
     discover_fn,
     refresh_interval,
     photo_idx,
@@ -391,7 +406,7 @@ def _export_and_submit_photo(
     except Exception as e:
         state.processed += 1
         state.photos_fail += 1
-        _record_error(photo, "photo", model, e)
+        _record_error(photo, "photo", None, e)
         logger.error(
             f"[{state.processed}/{state.total}] Export failed: "
             f"{photo.original_filename}: {e}"
@@ -399,17 +414,15 @@ def _export_and_submit_photo(
         tracker.record_failure(photo.uuid, photo.original_filename)
         return
 
-    fut = pool.submit(
+    fut = executor.submit(
         _label_photo_with_retry,
         photo,
         image_b64,
         export_meta,
         export_duration,
-        base_url,
-        model,
+        server_pool,
         write,
         tracker,
-        api_key,
     )
     in_flight[fut] = photo
 
@@ -445,17 +458,15 @@ def _drain_remaining_futures(in_flight: dict, state: _BatchState) -> None:
 def _process_photos_parallel(
     state,
     threads,
-    model,
+    server_pool: ServerPool,
     max_dimension,
-    base_url,
     write,
     tracker,
-    api_key,
     discover_fn,
     refresh_interval,
 ):
     """Process photos: export on main thread, LLM+write in worker threads."""
-    pool = ThreadPoolExecutor(max_workers=threads)
+    executor = ThreadPoolExecutor(max_workers=threads)
     in_flight: dict = {}  # future -> PhotoInfo
     photo_idx = 0
     try:
@@ -477,15 +488,13 @@ def _process_photos_parallel(
 
             _export_and_submit_photo(
                 photo,
-                pool,
+                executor,
                 in_flight,
                 state,
-                model,
+                server_pool,
                 max_dimension,
-                base_url,
                 write,
                 tracker,
-                api_key,
                 discover_fn,
                 refresh_interval,
                 photo_idx,
@@ -493,18 +502,18 @@ def _process_photos_parallel(
 
         _drain_remaining_futures(in_flight, state)
     finally:
-        pool.shutdown(wait=not is_shutting_down(), cancel_futures=is_shutting_down())
+        executor.shutdown(
+            wait=not is_shutting_down(), cancel_futures=is_shutting_down()
+        )
 
 
 def _process_videos_sequential(
     state,
-    base_url,
-    model,
+    server_pool: ServerPool,
     video_frames,
     max_dimension,
     write,
     tracker,
-    api_key,
     discover_fn,
     refresh_interval,
 ):
@@ -526,13 +535,11 @@ def _process_videos_sequential(
         try:
             _process_video_with_retry(
                 video,
-                base_url,
-                model,
+                server_pool,
                 video_frames,
                 max_dimension,
                 write,
                 tracker,
-                api_key,
             )
             state.videos_ok += 1
             logger.info(
@@ -555,15 +562,13 @@ def _process_videos_sequential(
 
 def process_batch(
     items: list[osxphotos.PhotoInfo],
-    base_url: str,
-    model: str,
+    server_pool: ServerPool,
     threads: int,
     video_frames: int,
     max_dimension: int = 1024,
     write: bool = True,
     discover_fn=None,
     refresh_interval: int = DEFAULT_REFRESH_INTERVAL,
-    api_key: str = "",
 ):
     """Process a batch of media: photos in parallel, then videos sequentially.
 
@@ -572,12 +577,16 @@ def process_batch(
 
     If discover_fn is provided, the main thread will call it every
     refresh_interval seconds to pick up newly added items.
+
+    LLM calls are distributed round-robin across ``server_pool``. On retry a
+    fresh server is selected so a crashed backend rotates away.
     """
     state = _init_batch(items)
     tracker = ItemFailureTracker()
 
+    run_model = ",".join(server_pool.models())
     run_id = metrics.start_run(
-        model=model,
+        model=run_model,
         threads=threads,
         dry_run=not write,
         photos_found=len(state.photos),
@@ -587,17 +596,16 @@ def process_batch(
 
     if state.photos:
         logger.info(
-            f"Processing {len(state.photos)} photos (up to {threads} threads)..."
+            f"Processing {len(state.photos)} photos "
+            f"(up to {threads} threads across {len(server_pool)} server(s))..."
         )
         _process_photos_parallel(
             state,
             threads,
-            model,
+            server_pool,
             max_dimension,
-            base_url,
             write,
             tracker,
-            api_key,
             discover_fn,
             refresh_interval,
         )
@@ -609,13 +617,11 @@ def process_batch(
         logger.info(f"Processing {len(state.videos)} videos sequentially...")
         _process_videos_sequential(
             state,
-            base_url,
-            model,
+            server_pool,
             video_frames,
             max_dimension,
             write,
             tracker,
-            api_key,
             discover_fn,
             refresh_interval,
         )

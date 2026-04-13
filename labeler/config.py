@@ -10,6 +10,7 @@ DEFAULTS = {
     "base_url": "http://localhost:1234/v1",
     "api_key": "",
     "model": "google/gemma-4-e4b",
+    "servers": [],
     "poll_interval": 21600,
     "limit_per_cycle": 0,
     "days": 0,
@@ -48,6 +49,33 @@ def save_config(config: dict):
     CONFIG_PATH.write_text(json.dumps(filtered, indent=2) + "\n")
 
 
+def _parse_server_spec(spec: str) -> dict:
+    """Parse a 'url|model[|api_key]' spec into a server dict."""
+    parts = [p.strip() for p in spec.split("|")]
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        raise ValueError(
+            f"Invalid server spec {spec!r}. Expected 'base_url|model[|api_key]'."
+        )
+    server = {"base_url": parts[0], "model": parts[1]}
+    if len(parts) >= 3 and parts[2]:
+        server["api_key"] = parts[2]
+    return server
+
+
+def resolve_servers(cfg: dict) -> list[dict]:
+    """Return the effective list of server configs, falling back to legacy keys."""
+    servers = cfg.get("servers") or []
+    if servers:
+        return [dict(s) for s in servers]
+    return [
+        {
+            "base_url": cfg.get("base_url", ""),
+            "model": cfg.get("model", ""),
+            "api_key": cfg.get("api_key", ""),
+        }
+    ]
+
+
 def set_value(key: str, value: str):
     """Update a single config key, coercing the string value to the correct type."""
     if key not in VALID_KEYS:
@@ -61,6 +89,10 @@ def set_value(key: str, value: str):
         config[key] = value.lower() in ("true", "1", "yes")
     elif isinstance(default_val, int):
         config[key] = int(value)
+    elif isinstance(default_val, list):
+        # Comma-separated 'url|model[|api_key]' specs
+        specs = [s.strip() for s in value.split(",") if s.strip()]
+        config[key] = [_parse_server_spec(s) for s in specs]
     else:
         config[key] = value
     save_config(config)

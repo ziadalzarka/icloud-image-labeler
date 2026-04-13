@@ -10,7 +10,7 @@ from labeler import config, daemon, metrics
 from labeler.checks import check_dependencies
 from labeler.discovery import get_unprocessed_media
 from labeler.init import run_init
-from labeler.llm import model_tag
+from labeler.llm import Server, ServerPool
 from labeler.processor import process_batch
 from labeler.shutdown import install_handlers as install_signal_handlers
 from labeler.shutdown import is_shutting_down
@@ -33,12 +33,49 @@ def _setup_logging(verbose: bool = False):
         logging.getLogger(name).setLevel(logging.INFO)
 
 
+def _resolve_servers(args, cfg) -> list[Server]:
+    """Build the list of Server backends from CLI flags and config."""
+    # 1. CLI --server wins entirely if provided (one spec per flag).
+    if args.server:
+        specs = [config._parse_server_spec(s) for s in args.server]
+        return [
+            Server(
+                base_url=s["base_url"],
+                model=s["model"],
+                api_key=s.get("api_key", ""),
+            )
+            for s in specs
+        ]
+
+    # 2. Legacy single-server CLI flags --base-url/--model/--api-key override
+    #    the config's first server (or its legacy base_url/model).
+    cfg_servers = config.resolve_servers(cfg)
+    if args.base_url or args.model or args.api_key:
+        first = cfg_servers[0] if cfg_servers else {}
+        return [
+            Server(
+                base_url=args.base_url or first.get("base_url", ""),
+                model=args.model or first.get("model", ""),
+                api_key=args.api_key or first.get("api_key", ""),
+            )
+        ]
+
+    # 3. Otherwise take whatever the config says.
+    return [
+        Server(
+            base_url=s.get("base_url", ""),
+            model=s.get("model", ""),
+            api_key=s.get("api_key", ""),
+        )
+        for s in cfg_servers
+    ]
+
+
 def _resolve_config(args, cfg):
     """Merge CLI flags with config file values, CLI taking precedence."""
+    servers = _resolve_servers(args, cfg)
     resolved = {
-        "base_url": args.base_url or cfg["base_url"],
-        "api_key": args.api_key or cfg["api_key"],
-        "model": args.model or cfg["model"],
+        "servers": servers,
         "limit": args.limit if args.limit is not None else cfg["limit_per_cycle"],
         "days": args.days if args.days is not None else cfg["days"],
         "to_days": args.to_days if args.to_days is not None else cfg["to_days"],
@@ -66,9 +103,16 @@ def _resolve_config(args, cfg):
 def _run(args, cfg):
     """One-shot or loop processing."""
     rc = _resolve_config(args, cfg)
-    expected_tag = model_tag(rc["model"]) if rc["reindex"] else None
+    if not rc["servers"]:
+        logger.error("No LLM servers configured. Run 'icloud-image-labeler init'.")
+        return
+
+    pool = ServerPool(rc["servers"])
+    for s in pool.servers():
+        logger.info(f"Server: {s.base_url} ({s.model})")
+    expected_tags = pool.model_tags() if rc["reindex"] else None
     if rc["reindex"]:
-        logger.info(f"Reindex mode: current model tag {expected_tag}")
+        logger.info(f"Reindex mode: accepting model tags {sorted(expected_tags)}")
 
     def discover():
         return get_unprocessed_media(
@@ -78,7 +122,7 @@ def _run(args, cfg):
             photo=rc["photo"],
             video=rc["video"],
             reindex=rc["reindex"],
-            expected_model_tag=expected_tag,
+            expected_model_tags=expected_tags,
         )
 
     try:
@@ -97,15 +141,13 @@ def _run(args, cfg):
             if items:
                 process_batch(
                     items,
-                    base_url=rc["base_url"],
-                    model=rc["model"],
+                    server_pool=pool,
                     threads=rc["threads"],
                     video_frames=rc["video_frames"],
                     max_dimension=rc["max_dimension"],
                     write=rc["write"],
                     discover_fn=discover,
                     refresh_interval=DEFAULT_REFRESH_INTERVAL,
-                    api_key=rc["api_key"],
                 )
             else:
                 logger.info("No unprocessed media found.")
@@ -202,6 +244,16 @@ def _build_run_parser(subparsers):
     run_parser.add_argument("--base-url", default=None)
     run_parser.add_argument("--api-key", default=None)
     run_parser.add_argument("--model", default=None)
+    run_parser.add_argument(
+        "--server",
+        action="append",
+        default=None,
+        metavar="URL|MODEL[|API_KEY]",
+        help=(
+            "LLM backend to use. Repeat to distribute requests across"
+            " multiple servers (round-robin)."
+        ),
+    )
     run_parser.add_argument("--threads", type=int, default=None)
     run_parser.add_argument("--video-frames", type=int, default=None)
     run_parser.add_argument(
