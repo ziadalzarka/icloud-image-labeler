@@ -10,6 +10,7 @@ plugins:
         - [duration_over_time, duration_over_time, duration_over_time, duration_over_time]
         - [llm_duration_over_time, llm_duration_over_time, llm_duration_over_time, llm_duration_over_time]
         - [items_per_day, items_per_day, phase_breakdown, phase_breakdown]
+        - [items_per_15min, items_per_15min, items_per_15min, items_per_15min]
         - [status_split, media_split, retries_histogram, models_by_latency]
         - [runs_timeline, runs_timeline, runs_timeline, runs_timeline]
       charts:
@@ -152,6 +153,29 @@ plugins:
                 stack: true
                 title: Avg seconds
               color: { field: phase, type: nominal }
+        items_per_15min:
+          title: Items processed per 15-min window (24h)
+          db: metrics
+          query: |
+            SELECT
+              datetime(
+                strftime('%s', timestamp) - (strftime('%s', timestamp) % 900),
+                'unixepoch'
+              ) AS window,
+              media_type,
+              COUNT(*) AS count
+            FROM item_metrics
+            WHERE status = 'success'
+              AND timestamp >= datetime('now', '-24 hours')
+            GROUP BY window, media_type
+            ORDER BY window
+          library: vega-lite
+          display:
+            mark: { type: line, point: true, tooltip: true, interpolate: monotone }
+            encoding:
+              x: { field: window, type: temporal, title: 15-min window }
+              y: { field: count, type: quantitative, title: Items }
+              color: { field: media_type, type: nominal, title: Media }
         status_split:
           title: Status split (24h)
           db: metrics
