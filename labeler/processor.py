@@ -63,10 +63,17 @@ def _server_label(server) -> str:
     return f"[{host} {server.model}]"
 
 
+def _server_tag(server) -> str:
+    """Stable 'host:model' identifier stored on each metric row."""
+    host = urlparse(server.base_url).hostname or server.base_url
+    return f"{host}:{server.model}"
+
+
 def _record_error(
     item: osxphotos.PhotoInfo,
     media_type: str,
     model: str | None,
+    server: str | None,
     error: Exception,
 ):
     """Record a failed item in metrics."""
@@ -78,6 +85,7 @@ def _record_error(
         status="error",
         error_message=str(error),
         model=model,
+        server=server,
     )
 
 
@@ -146,6 +154,7 @@ def _label_and_write_photo(
         keywords_count=len(labels.get("keywords", [])),
         has_ocr=bool(labels.get("ocr_text")),
         model=server.model,
+        server=_server_tag(server),
     )
 
 
@@ -160,9 +169,11 @@ def _label_photo_with_retry(
 ):
     attempt = 0
     last_model: str | None = None
+    last_server_tag: str | None = None
     while True:
         server = pool.acquire()
         last_model = server.model
+        last_server_tag = _server_tag(server)
         released = False
         try:
             _label_and_write_photo(
@@ -188,7 +199,7 @@ def _label_photo_with_retry(
                     raise
                 continue
             tracker.record_failure(item.uuid, item.original_filename)
-            _record_error(item, "photo", last_model, e)
+            _record_error(item, "photo", last_model, last_server_tag, e)
             raise
         finally:
             if not released:
@@ -250,6 +261,7 @@ def _process_single_video(
         keywords_count=len(labels.get("keywords", [])),
         has_ocr=bool(labels.get("ocr_text")),
         model=server.model,
+        server=_server_tag(server),
     )
 
 
@@ -258,9 +270,11 @@ def _process_video_with_retry(
 ):
     attempt = 0
     last_model: str | None = None
+    last_server_tag: str | None = None
     while True:
         server = pool.acquire()
         last_model = server.model
+        last_server_tag = _server_tag(server)
         released = False
         try:
             _process_single_video(
@@ -285,7 +299,7 @@ def _process_video_with_retry(
                     raise
                 continue
             tracker.record_failure(item.uuid, item.original_filename)
-            _record_error(item, "video", last_model, e)
+            _record_error(item, "video", last_model, last_server_tag, e)
             raise
         finally:
             if not released:
@@ -418,7 +432,7 @@ def _export_and_submit_photo(
     except Exception as e:
         state.processed += 1
         state.photos_fail += 1
-        _record_error(photo, "photo", None, e)
+        _record_error(photo, "photo", None, None, e)
         logger.error(
             f"[{state.processed}/{state.total}] Export failed: "
             f"{photo.original_filename}: {e}"
@@ -598,8 +612,10 @@ def process_batch(
     total_threads = server_pool.total_threads
 
     run_model = ",".join(server_pool.models())
+    run_servers = ",".join(_server_tag(s) for s in server_pool.servers())
     run_id = metrics.start_run(
         model=run_model,
+        servers=run_servers,
         threads=total_threads,
         dry_run=not write,
         photos_found=len(state.photos),

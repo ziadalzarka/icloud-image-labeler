@@ -46,6 +46,7 @@ def init_db():
             keywords_count INTEGER,
             has_ocr INTEGER DEFAULT 0,
             model TEXT,
+            server TEXT,
             timestamp TEXT NOT NULL
         );
 
@@ -61,6 +62,7 @@ def init_db():
             photos_failed INTEGER DEFAULT 0,
             videos_failed INTEGER DEFAULT 0,
             model TEXT,
+            servers TEXT,
             threads INTEGER,
             dry_run INTEGER DEFAULT 0,
             avg_llm_duration_s REAL
@@ -70,8 +72,18 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_item_status ON item_metrics(status);
         CREATE INDEX IF NOT EXISTS idx_run_started ON run_metrics(started_at);
     """)
+    _ensure_column(conn, "item_metrics", "server", "TEXT")
+    _ensure_column(conn, "run_metrics", "servers", "TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_item_server ON item_metrics(server)")
     conn.commit()
     logger.debug(f"Metrics database initialized at {DB_PATH}")
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, col_type: str):
+    """Add a column to an existing table if missing (SQLite migration helper)."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
 
 def record_item(
@@ -93,6 +105,7 @@ def record_item(
     keywords_count: int | None = None,
     has_ocr: bool = False,
     model: str | None = None,
+    server: str | None = None,
 ):
     """Record metrics for a single processed item (upserts by uuid)."""
     conn = _get_conn()
@@ -101,8 +114,8 @@ def record_item(
             uuid, filename, media_type, is_icloud_only, status, error_message,
             export_duration_s, llm_duration_s, write_duration_s, total_duration_s,
             image_size_bytes, image_width, image_height, num_frames,
-            llm_retries, keywords_count, has_ocr, model, timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            llm_retries, keywords_count, has_ocr, model, server, timestamp
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(uuid) DO UPDATE SET
             filename=excluded.filename,
             media_type=excluded.media_type,
@@ -121,6 +134,7 @@ def record_item(
             keywords_count=excluded.keywords_count,
             has_ocr=excluded.has_ocr,
             model=excluded.model,
+            server=excluded.server,
             timestamp=excluded.timestamp""",
         (
             uuid,
@@ -141,6 +155,7 @@ def record_item(
             keywords_count,
             int(has_ocr),
             model,
+            server,
             datetime.now(timezone.utc).isoformat(),
         ),
     )
@@ -148,19 +163,25 @@ def record_item(
 
 
 def start_run(
-    model: str, threads: int, dry_run: bool, photos_found: int, videos_found: int
+    model: str,
+    threads: int,
+    dry_run: bool,
+    photos_found: int,
+    videos_found: int,
+    servers: str | None = None,
 ) -> int:
     """Record the start of a batch run. Returns the run ID."""
     conn = _get_conn()
     cursor = conn.execute(
         """INSERT INTO run_metrics (
-            started_at, model, threads,
+            started_at, model, servers, threads,
             dry_run, photos_found, videos_found
         )
-        VALUES (?, ?, ?, ?, ?, ?)""",
+        VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (
             datetime.now(timezone.utc).isoformat(),
             model,
+            servers,
             threads,
             int(dry_run),
             photos_found,

@@ -11,6 +11,7 @@ plugins:
         - [llm_duration_over_time, llm_duration_over_time, llm_duration_over_time, llm_duration_over_time]
         - [items_per_day, items_per_day, phase_breakdown, phase_breakdown]
         - [items_per_15min, items_per_15min, items_per_15min, items_per_15min]
+        - [items_per_server, items_per_server, server_latency, server_latency]
         - [status_split, media_split, retries_histogram, models_by_latency]
         - [runs_timeline, runs_timeline, runs_timeline, runs_timeline]
       charts:
@@ -176,6 +177,46 @@ plugins:
               x: { field: window, type: temporal, title: 15-min window }
               y: { field: count, type: quantitative, title: Items }
               color: { field: media_type, type: nominal, title: Media }
+        items_per_server:
+          title: Items processed per hour by server (24h)
+          db: metrics
+          query: |
+            SELECT
+              strftime('%Y-%m-%dT%H:00:00Z', timestamp) AS hour,
+              COALESCE(server, 'unknown') AS server,
+              COUNT(*) AS count
+            FROM item_metrics
+            WHERE status = 'success'
+              AND timestamp >= datetime('now', '-24 hours')
+            GROUP BY hour, server
+            ORDER BY hour
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: hour, type: temporal, title: Hour }
+              y: { field: count, type: quantitative, aggregate: sum, title: Items }
+              color: { field: server, type: nominal, title: Server }
+        server_latency:
+          title: Avg LLM latency by server (24h)
+          db: metrics
+          query: |
+            SELECT
+              COALESCE(server, 'unknown') AS server,
+              ROUND(AVG(llm_duration_s), 2) AS avg_s,
+              COUNT(*) AS items
+            FROM item_metrics
+            WHERE llm_duration_s IS NOT NULL
+              AND timestamp >= datetime('now', '-24 hours')
+            GROUP BY server
+            ORDER BY avg_s DESC
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: avg_s, type: quantitative, title: Avg seconds }
+              y: { field: server, type: nominal, sort: "-x" }
+              color: { field: server, type: nominal, legend: null }
         status_split:
           title: Status split (24h)
           db: metrics
