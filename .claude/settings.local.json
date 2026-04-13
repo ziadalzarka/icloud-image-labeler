@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/ziadalzarka/.image-labeler/**)",
+      "Bash(python3 -c \"import sqlite3; c=sqlite3.connect\\('/Users/ziadalzarka/.image-labeler/metrics.db'\\); print\\(c.execute\\('SELECT COUNT\\(*\\) FROM item_metrics'\\).fetchone\\(\\), c.execute\\('SELECT COUNT\\(*\\) FROM run_metrics'\\).fetchone\\(\\)\\)\")",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(wc:*)",
+      "mcp__plugin_claude-mem_mcp-search__smart_outline",
+      "mcp__plugin_claude-mem_mcp-search__get_observations",
+      "Bash(curl:*)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('capabilities:', d.get\\('capabilities'\\)\\); print\\('family:', d.get\\('details',{}\\).get\\('family'\\)\\); print\\('param_size:', d.get\\('details',{}\\).get\\('parameter_size'\\)\\)\")",
+      "Bash(python:*)"
+    ]
+  }
+}
