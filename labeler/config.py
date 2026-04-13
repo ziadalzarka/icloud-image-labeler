@@ -50,15 +50,18 @@ def save_config(config: dict):
 
 
 def _parse_server_spec(spec: str) -> dict:
-    """Parse a 'url|model[|api_key]' spec into a server dict."""
+    """Parse a 'url|model[|api_key[|threads]]' spec into a server dict."""
     parts = [p.strip() for p in spec.split("|")]
     if len(parts) < 2 or not parts[0] or not parts[1]:
         raise ValueError(
-            f"Invalid server spec {spec!r}. Expected 'base_url|model[|api_key]'."
+            f"Invalid server spec {spec!r}."
+            " Expected 'base_url|model[|api_key[|threads]]'."
         )
     server = {"base_url": parts[0], "model": parts[1]}
     if len(parts) >= 3 and parts[2]:
         server["api_key"] = parts[2]
+    if len(parts) >= 4 and parts[3]:
+        server["threads"] = int(parts[3])
     return server
 
 
@@ -72,6 +75,7 @@ def resolve_servers(cfg: dict) -> list[dict]:
             "base_url": cfg.get("base_url", ""),
             "model": cfg.get("model", ""),
             "api_key": cfg.get("api_key", ""),
+            "threads": cfg.get("threads", 1),
         }
     ]
 

@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass
 
 from openai import OpenAI
@@ -67,35 +68,65 @@ def create_client(base_url: str, api_key: str = "") -> OpenAI:
 
 @dataclass(frozen=True)
 class Server:
-    """One LLM backend: endpoint URL, model id, and optional API key."""
+    """One LLM backend: endpoint URL, model id, optional API key, and slot count."""
 
     base_url: str
     model: str
     api_key: str = ""
+    threads: int = 1
+
+
+_ACQUIRE_POLL = 0.05
 
 
 class ServerPool:
-    """Thread-safe round-robin pool of LLM servers.
+    """Round-robin LLM server pool with per-server concurrency limits.
 
-    Each call to `next()` hands out the following server in round-robin
-    order, so crashed servers get rotated away on retry.
+    Each server has its own semaphore sized to ``server.threads``. ``acquire``
+    hands out the next server with a free slot in round-robin order and blocks
+    if every server is saturated. Callers must ``release`` when done so the
+    slot is returned to the pool. On retry, callers should release first so a
+    crashed backend rotates away.
     """
 
     def __init__(self, servers: list[Server]):
         if not servers:
             raise ValueError("ServerPool requires at least one server")
+        for s in servers:
+            if s.threads < 1:
+                raise ValueError(
+                    f"Server {s.base_url} has threads={s.threads}; must be >= 1"
+                )
         self._servers = list(servers)
+        self._slots = [threading.Semaphore(s.threads) for s in self._servers]
         self._idx = 0
         self._lock = threading.Lock()
 
     def __len__(self) -> int:
         return len(self._servers)
 
-    def next(self) -> Server:
-        with self._lock:
-            server = self._servers[self._idx % len(self._servers)]
-            self._idx += 1
-            return server
+    @property
+    def total_threads(self) -> int:
+        return sum(s.threads for s in self._servers)
+
+    def acquire(self) -> Server:
+        """Block until any server has a free slot, then return that server."""
+        while True:
+            with self._lock:
+                n = len(self._servers)
+                for i in range(n):
+                    j = (self._idx + i) % n
+                    if self._slots[j].acquire(blocking=False):
+                        self._idx = (j + 1) % n
+                        return self._servers[j]
+            time.sleep(_ACQUIRE_POLL)
+
+    def release(self, server: Server) -> None:
+        for i, s in enumerate(self._servers):
+            if s is server:
+                self._slots[i].release()
+                return
+        raise ValueError(f"Unknown server {server.base_url!r}")
 
     def servers(self) -> list[Server]:
         return list(self._servers)

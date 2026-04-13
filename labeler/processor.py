@@ -161,8 +161,9 @@ def _label_photo_with_retry(
     attempt = 0
     last_model: str | None = None
     while True:
-        server = pool.next()
+        server = pool.acquire()
         last_model = server.model
+        released = False
         try:
             _label_and_write_photo(
                 item,
@@ -175,6 +176,8 @@ def _label_photo_with_retry(
             return
         except Exception as e:
             if _is_retryable_error(e):
+                pool.release(server)
+                released = True
                 delay = _retry_delay(attempt)
                 attempt += 1
                 logger.warning(
@@ -187,6 +190,9 @@ def _label_photo_with_retry(
             tracker.record_failure(item.uuid, item.original_filename)
             _record_error(item, "photo", last_model, e)
             raise
+        finally:
+            if not released:
+                pool.release(server)
 
 
 # --- Video processing (fully on main thread) ------------------------------
@@ -253,8 +259,9 @@ def _process_video_with_retry(
     attempt = 0
     last_model: str | None = None
     while True:
-        server = pool.next()
+        server = pool.acquire()
         last_model = server.model
+        released = False
         try:
             _process_single_video(
                 item,
@@ -266,6 +273,8 @@ def _process_video_with_retry(
             return
         except Exception as e:
             if _is_retryable_error(e):
+                pool.release(server)
+                released = True
                 delay = _retry_delay(attempt)
                 attempt += 1
                 logger.warning(
@@ -278,6 +287,9 @@ def _process_video_with_retry(
             tracker.record_failure(item.uuid, item.original_filename)
             _record_error(item, "video", last_model, e)
             raise
+        finally:
+            if not released:
+                pool.release(server)
 
 
 # --- Batch state and helpers ------------------------------------------------
@@ -457,7 +469,6 @@ def _drain_remaining_futures(in_flight: dict, state: _BatchState) -> None:
 
 def _process_photos_parallel(
     state,
-    threads,
     server_pool: ServerPool,
     max_dimension,
     write,
@@ -466,7 +477,8 @@ def _process_photos_parallel(
     refresh_interval,
 ):
     """Process photos: export on main thread, LLM+write in worker threads."""
-    executor = ThreadPoolExecutor(max_workers=threads)
+    total_threads = server_pool.total_threads
+    executor = ThreadPoolExecutor(max_workers=total_threads)
     in_flight: dict = {}  # future -> PhotoInfo
     photo_idx = 0
     try:
@@ -474,7 +486,7 @@ def _process_photos_parallel(
             _collect_completed_futures(in_flight, state)
 
             # Backpressure: wait if all worker slots are busy
-            if photo_idx < len(state.photos) and len(in_flight) >= threads:
+            if photo_idx < len(state.photos) and len(in_flight) >= total_threads:
                 time.sleep(_POLL_INTERVAL)
                 continue
 
@@ -563,7 +575,6 @@ def _process_videos_sequential(
 def process_batch(
     items: list[osxphotos.PhotoInfo],
     server_pool: ServerPool,
-    threads: int,
     video_frames: int,
     max_dimension: int = 1024,
     write: bool = True,
@@ -578,16 +589,18 @@ def process_batch(
     If discover_fn is provided, the main thread will call it every
     refresh_interval seconds to pick up newly added items.
 
-    LLM calls are distributed round-robin across ``server_pool``. On retry a
-    fresh server is selected so a crashed backend rotates away.
+    LLM calls are distributed round-robin across ``server_pool``, with each
+    server limited to its own ``threads`` slot count. On retry a fresh server
+    is selected so a crashed backend rotates away.
     """
     state = _init_batch(items)
     tracker = ItemFailureTracker()
+    total_threads = server_pool.total_threads
 
     run_model = ",".join(server_pool.models())
     run_id = metrics.start_run(
         model=run_model,
-        threads=threads,
+        threads=total_threads,
         dry_run=not write,
         photos_found=len(state.photos),
         videos_found=len(state.videos),
@@ -595,13 +608,16 @@ def process_batch(
     state.last_refresh = time.monotonic()
 
     if state.photos:
+        breakdown = ", ".join(
+            f"{s.base_url}={s.threads}" for s in server_pool.servers()
+        )
         logger.info(
             f"Processing {len(state.photos)} photos "
-            f"(up to {threads} threads across {len(server_pool)} server(s))..."
+            f"(up to {total_threads} threads across {len(server_pool)} server(s): "
+            f"{breakdown})..."
         )
         _process_photos_parallel(
             state,
-            threads,
             server_pool,
             max_dimension,
             write,

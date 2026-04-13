@@ -9,7 +9,8 @@
       "mcp__plugin_claude-mem_mcp-search__get_observations",
       "Bash(curl:*)",
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('capabilities:', d.get\\('capabilities'\\)\\); print\\('family:', d.get\\('details',{}\\).get\\('family'\\)\\); print\\('param_size:', d.get\\('details',{}\\).get\\('parameter_size'\\)\\)\")",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(ollama ps:*)"
     ]
   }
 }

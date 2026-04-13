@@ -34,7 +34,16 @@ def _setup_logging(verbose: bool = False):
 
 
 def _resolve_servers(args, cfg) -> list[Server]:
-    """Build the list of Server backends from CLI flags and config."""
+    """Build the list of Server backends from CLI flags and config.
+
+    Thread counts come from (in order): the per-server spec/config field, the
+    CLI ``--threads`` flag (applied as the default for every server lacking
+    its own value), then the legacy global ``threads`` config key, then 1.
+    """
+    default_threads = (
+        args.threads if args.threads is not None else cfg.get("threads", 1)
+    )
+
     # 1. CLI --server wins entirely if provided (one spec per flag).
     if args.server:
         specs = [config._parse_server_spec(s) for s in args.server]
@@ -43,6 +52,7 @@ def _resolve_servers(args, cfg) -> list[Server]:
                 base_url=s["base_url"],
                 model=s["model"],
                 api_key=s.get("api_key", ""),
+                threads=s.get("threads", default_threads),
             )
             for s in specs
         ]
@@ -57,6 +67,7 @@ def _resolve_servers(args, cfg) -> list[Server]:
                 base_url=args.base_url or first.get("base_url", ""),
                 model=args.model or first.get("model", ""),
                 api_key=args.api_key or first.get("api_key", ""),
+                threads=first.get("threads", default_threads),
             )
         ]
 
@@ -66,6 +77,7 @@ def _resolve_servers(args, cfg) -> list[Server]:
             base_url=s.get("base_url", ""),
             model=s.get("model", ""),
             api_key=s.get("api_key", ""),
+            threads=s.get("threads", default_threads),
         )
         for s in cfg_servers
     ]
@@ -79,7 +91,6 @@ def _resolve_config(args, cfg):
         "limit": args.limit if args.limit is not None else cfg["limit_per_cycle"],
         "days": args.days if args.days is not None else cfg["days"],
         "to_days": args.to_days if args.to_days is not None else cfg["to_days"],
-        "threads": args.threads if args.threads is not None else cfg["threads"],
         "video_frames": (
             args.video_frames if args.video_frames is not None else cfg["video_frames"]
         ),
@@ -109,7 +120,7 @@ def _run(args, cfg):
 
     pool = ServerPool(rc["servers"])
     for s in pool.servers():
-        logger.info(f"Server: {s.base_url} ({s.model})")
+        logger.info(f"Server: {s.base_url} ({s.model}, threads={s.threads})")
     expected_tags = pool.model_tags() if rc["reindex"] else None
     if rc["reindex"]:
         logger.info(f"Reindex mode: accepting model tags {sorted(expected_tags)}")
@@ -142,7 +153,6 @@ def _run(args, cfg):
                 process_batch(
                     items,
                     server_pool=pool,
-                    threads=rc["threads"],
                     video_frames=rc["video_frames"],
                     max_dimension=rc["max_dimension"],
                     write=rc["write"],
@@ -248,10 +258,11 @@ def _build_run_parser(subparsers):
         "--server",
         action="append",
         default=None,
-        metavar="URL|MODEL[|API_KEY]",
+        metavar="URL|MODEL[|API_KEY[|THREADS]]",
         help=(
             "LLM backend to use. Repeat to distribute requests across"
-            " multiple servers (round-robin)."
+            " multiple servers (round-robin). The optional THREADS field"
+            " sets per-server concurrency."
         ),
     )
     run_parser.add_argument("--threads", type=int, default=None)
