@@ -47,6 +47,8 @@ def init_db():
             has_ocr INTEGER DEFAULT 0,
             model TEXT,
             server TEXT,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
             timestamp TEXT NOT NULL
         );
 
@@ -68,11 +70,20 @@ def init_db():
             avg_llm_duration_s REAL
         );
 
+        CREATE TABLE IF NOT EXISTS model_pricing (
+            model TEXT PRIMARY KEY,
+            input_per_1m REAL NOT NULL,
+            output_per_1m REAL NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_item_timestamp ON item_metrics(timestamp);
         CREATE INDEX IF NOT EXISTS idx_item_status ON item_metrics(status);
         CREATE INDEX IF NOT EXISTS idx_run_started ON run_metrics(started_at);
     """)
     _ensure_column(conn, "item_metrics", "server", "TEXT")
+    _ensure_column(conn, "item_metrics", "input_tokens", "INTEGER")
+    _ensure_column(conn, "item_metrics", "output_tokens", "INTEGER")
     _ensure_column(conn, "run_metrics", "servers", "TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_item_server ON item_metrics(server)")
     conn.commit()
@@ -106,6 +117,8 @@ def record_item(
     has_ocr: bool = False,
     model: str | None = None,
     server: str | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
 ):
     """Record metrics for a single processed item (upserts by uuid)."""
     conn = _get_conn()
@@ -114,8 +127,9 @@ def record_item(
             uuid, filename, media_type, is_icloud_only, status, error_message,
             export_duration_s, llm_duration_s, write_duration_s, total_duration_s,
             image_size_bytes, image_width, image_height, num_frames,
-            llm_retries, keywords_count, has_ocr, model, server, timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            llm_retries, keywords_count, has_ocr, model, server,
+            input_tokens, output_tokens, timestamp
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(uuid) DO UPDATE SET
             filename=excluded.filename,
             media_type=excluded.media_type,
@@ -135,6 +149,8 @@ def record_item(
             has_ocr=excluded.has_ocr,
             model=excluded.model,
             server=excluded.server,
+            input_tokens=excluded.input_tokens,
+            output_tokens=excluded.output_tokens,
             timestamp=excluded.timestamp""",
         (
             uuid,
@@ -156,6 +172,8 @@ def record_item(
             int(has_ocr),
             model,
             server,
+            input_tokens,
+            output_tokens,
             datetime.now(timezone.utc).isoformat(),
         ),
     )
@@ -190,6 +208,47 @@ def start_run(
     )
     conn.commit()
     return cursor.lastrowid
+
+
+def set_pricing(model: str, input_per_1m: float, output_per_1m: float):
+    """Upsert pricing (USD per 1M tokens) for a model."""
+    conn = _get_conn()
+    conn.execute(
+        """INSERT INTO model_pricing (model, input_per_1m, output_per_1m, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(model) DO UPDATE SET
+            input_per_1m=excluded.input_per_1m,
+            output_per_1m=excluded.output_per_1m,
+            updated_at=excluded.updated_at""",
+        (model, input_per_1m, output_per_1m, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+
+
+def list_pricing() -> list[dict]:
+    """Return all model pricing rows."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT model, input_per_1m, output_per_1m, updated_at "
+        "FROM model_pricing ORDER BY model"
+    ).fetchall()
+    return [
+        {
+            "model": r[0],
+            "input_per_1m": r[1],
+            "output_per_1m": r[2],
+            "updated_at": r[3],
+        }
+        for r in rows
+    ]
+
+
+def delete_pricing(model: str) -> int:
+    """Remove pricing for a model. Returns the number of rows deleted."""
+    conn = _get_conn()
+    cur = conn.execute("DELETE FROM model_pricing WHERE model = ?", (model,))
+    conn.commit()
+    return cur.rowcount
 
 
 def finish_run(

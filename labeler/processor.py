@@ -128,7 +128,7 @@ def _label_and_write_photo(
 
     logger.info(f"{_server_label(server)} Labeling photo: {item.original_filename}")
     t_llm = time.monotonic()
-    labels, llm_retries = label_photo(
+    labels, llm_retries, in_toks, out_toks = label_photo(
         client, server.model, image_b64, item.original_filename
     )
     llm_duration = time.monotonic() - t_llm
@@ -155,6 +155,8 @@ def _label_and_write_photo(
         has_ocr=bool(labels.get("ocr_text")),
         model=server.model,
         server=_server_tag(server),
+        input_tokens=in_toks,
+        output_tokens=out_toks,
     )
 
 
@@ -234,7 +236,7 @@ def _process_single_video(
         f"{item.original_filename} ({len(frames_b64)} frames)"
     )
     t_llm = time.monotonic()
-    labels, llm_retries = label_video(
+    labels, llm_retries, in_toks, out_toks = label_video(
         client, server.model, frames_b64, item.original_filename
     )
     llm_duration = time.monotonic() - t_llm
@@ -262,6 +264,8 @@ def _process_single_video(
         has_ocr=bool(labels.get("ocr_text")),
         model=server.model,
         server=_server_tag(server),
+        input_tokens=in_toks,
+        output_tokens=out_toks,
     )
 
 

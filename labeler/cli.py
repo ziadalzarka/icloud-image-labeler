@@ -211,6 +211,41 @@ def _daemon_cmd(args):
         sys.exit(1)
 
 
+def _pricing_cmd(args):
+    action = args.pricing_action
+
+    if action == "list":
+        rows = metrics.list_pricing()
+        if not rows:
+            print("No pricing configured.")
+            return
+        print(f"{'Model':<40} {'Input $/1M':>12} {'Output $/1M':>13}  Updated")
+        for r in rows:
+            print(
+                f"{r['model']:<40} {r['input_per_1m']:>12.4f}"
+                f" {r['output_per_1m']:>13.4f}  {r['updated_at']}"
+            )
+    elif action == "set":
+        if not args.model or args.input is None or args.output is None:
+            print("Usage: icloud-image-labeler pricing set <model> --input <$> --output <$>")
+            sys.exit(1)
+        metrics.set_pricing(args.model, args.input, args.output)
+        print(
+            f"Set pricing for {args.model}: "
+            f"input ${args.input}/1M, output ${args.output}/1M"
+        )
+    elif action == "delete":
+        if not args.model:
+            print("Usage: icloud-image-labeler pricing delete <model>")
+            sys.exit(1)
+        n = metrics.delete_pricing(args.model)
+        if n:
+            print(f"Deleted pricing for {args.model}")
+        else:
+            print(f"No pricing entry found for {args.model}")
+            sys.exit(1)
+
+
 def _metrics_cmd(args):
     action = args.metrics_action
 
@@ -324,6 +359,23 @@ def _build_parser():
     )
     metrics_parser.add_argument("--port", type=int, default=None)
 
+    pricing_parser = subparsers.add_parser(
+        "pricing", help="Manage per-model token pricing for cost dashboards"
+    )
+    pricing_parser.add_argument(
+        "pricing_action",
+        choices=["list", "set", "delete"],
+    )
+    pricing_parser.add_argument(
+        "model", nargs="?", default=None, help="Model name (e.g. google/gemma-4-e4b)"
+    )
+    pricing_parser.add_argument(
+        "--input", type=float, default=None, help="USD per 1M input tokens"
+    )
+    pricing_parser.add_argument(
+        "--output", type=float, default=None, help="USD per 1M output tokens"
+    )
+
     return parser, run_parser
 
 
@@ -354,3 +406,5 @@ def main():
         _config_cmd(args, cfg)
     elif args.command == "metrics":
         _metrics_cmd(args)
+    elif args.command == "pricing":
+        _pricing_cmd(args)

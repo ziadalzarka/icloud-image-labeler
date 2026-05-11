@@ -7,6 +7,8 @@ plugins:
       description: Throughput, latency, and reliability metrics for the labeler
       layout:
         - [total_items, success_rate, avg_llm_duration, total_runs]
+        - [avg_tokens_photo, avg_tokens_video, total_input_tokens, total_output_tokens]
+        - [avg_cost_photo, avg_cost_video, total_cost_24h, total_cost_by_model]
         - [duration_over_time, duration_over_time, duration_over_time, duration_over_time]
         - [llm_duration_over_time, llm_duration_over_time, llm_duration_over_time, llm_duration_over_time]
         - [items_per_day, items_per_day, phase_breakdown, phase_breakdown]
@@ -60,6 +62,162 @@ plugins:
           library: metric
           display:
             field: value
+        avg_tokens_photo:
+          title: Avg tokens / photo — input vs output (24h)
+          db: metrics
+          query: |
+            SELECT 'input' AS kind, ROUND(AVG(input_tokens), 0) AS avg_tokens
+            FROM item_metrics
+            WHERE media_type = 'photo'
+              AND input_tokens IS NOT NULL
+              AND timestamp >= datetime('now', '-24 hours')
+            UNION ALL
+            SELECT 'output' AS kind, ROUND(AVG(output_tokens), 0) AS avg_tokens
+            FROM item_metrics
+            WHERE media_type = 'photo'
+              AND output_tokens IS NOT NULL
+              AND timestamp >= datetime('now', '-24 hours')
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: kind, type: nominal, title: null }
+              y: { field: avg_tokens, type: quantitative, title: Avg tokens }
+              color:
+                field: kind
+                type: nominal
+                scale:
+                  domain: [input, output]
+                  range: ["#3498db", "#e67e22"]
+                legend: null
+        avg_tokens_video:
+          title: Avg tokens / video — input vs output (24h)
+          db: metrics
+          query: |
+            SELECT 'input' AS kind, ROUND(AVG(input_tokens), 0) AS avg_tokens
+            FROM item_metrics
+            WHERE media_type = 'video'
+              AND input_tokens IS NOT NULL
+              AND timestamp >= datetime('now', '-24 hours')
+            UNION ALL
+            SELECT 'output' AS kind, ROUND(AVG(output_tokens), 0) AS avg_tokens
+            FROM item_metrics
+            WHERE media_type = 'video'
+              AND output_tokens IS NOT NULL
+              AND timestamp >= datetime('now', '-24 hours')
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: kind, type: nominal, title: null }
+              y: { field: avg_tokens, type: quantitative, title: Avg tokens }
+              color:
+                field: kind
+                type: nominal
+                scale:
+                  domain: [input, output]
+                  range: ["#3498db", "#e67e22"]
+                legend: null
+        total_input_tokens:
+          title: Total input tokens (24h)
+          db: metrics
+          query: |
+            SELECT COALESCE(SUM(input_tokens), 0) AS value
+            FROM item_metrics
+            WHERE timestamp >= datetime('now', '-24 hours')
+          library: metric
+          display:
+            field: value
+        total_output_tokens:
+          title: Total output tokens (24h)
+          db: metrics
+          query: |
+            SELECT COALESCE(SUM(output_tokens), 0) AS value
+            FROM item_metrics
+            WHERE timestamp >= datetime('now', '-24 hours')
+          library: metric
+          display:
+            field: value
+        avg_cost_photo:
+          title: Avg cost / photo (24h)
+          db: metrics
+          query: |
+            SELECT ROUND(AVG(
+              COALESCE(m.input_tokens, 0)  * p.input_per_1m  / 1000000.0 +
+              COALESCE(m.output_tokens, 0) * p.output_per_1m / 1000000.0
+            ), 6) AS value
+            FROM item_metrics m
+            JOIN model_pricing p ON p.model = m.model
+            WHERE m.media_type = 'photo'
+              AND (m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL)
+              AND m.timestamp >= datetime('now', '-24 hours')
+          library: metric
+          display:
+            field: value
+            prefix: "$"
+        avg_cost_video:
+          title: Avg cost / video (24h)
+          db: metrics
+          query: |
+            SELECT ROUND(AVG(
+              COALESCE(m.input_tokens, 0)  * p.input_per_1m  / 1000000.0 +
+              COALESCE(m.output_tokens, 0) * p.output_per_1m / 1000000.0
+            ), 6) AS value
+            FROM item_metrics m
+            JOIN model_pricing p ON p.model = m.model
+            WHERE m.media_type = 'video'
+              AND (m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL)
+              AND m.timestamp >= datetime('now', '-24 hours')
+          library: metric
+          display:
+            field: value
+            prefix: "$"
+        total_cost_24h:
+          title: Total cost (24h)
+          db: metrics
+          query: |
+            SELECT ROUND(SUM(
+              COALESCE(m.input_tokens, 0)  * p.input_per_1m  / 1000000.0 +
+              COALESCE(m.output_tokens, 0) * p.output_per_1m / 1000000.0
+            ), 4) AS value
+            FROM item_metrics m
+            JOIN model_pricing p ON p.model = m.model
+            WHERE m.timestamp >= datetime('now', '-24 hours')
+          library: metric
+          display:
+            field: value
+            prefix: "$"
+        total_cost_by_model:
+          title: Total cost by model (24h)
+          db: metrics
+          query: |
+            SELECT
+              m.model AS model,
+              ROUND(SUM(
+                COALESCE(m.input_tokens, 0)  * p.input_per_1m  / 1000000.0
+              ), 4) AS input_cost,
+              ROUND(SUM(
+                COALESCE(m.output_tokens, 0) * p.output_per_1m / 1000000.0
+              ), 4) AS output_cost
+            FROM item_metrics m
+            JOIN model_pricing p ON p.model = m.model
+            WHERE m.timestamp >= datetime('now', '-24 hours')
+            GROUP BY m.model
+          library: vega-lite
+          display:
+            transform:
+              - fold: [input_cost, output_cost]
+                as: [kind, cost]
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: cost, type: quantitative, aggregate: sum, title: "USD" }
+              y: { field: model, type: nominal, sort: "-x" }
+              color:
+                field: kind
+                type: nominal
+                scale:
+                  domain: [input_cost, output_cost]
+                  range: ["#3498db", "#e67e22"]
         duration_over_time:
           title: Avg total duration per item (24h, hourly)
           db: metrics
