@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 
 import osxphotos
 
+from . import metrics
+
 logger = logging.getLogger(__name__)
 
 _MODEL_TAG_PREFIX = "m:"
@@ -49,12 +51,16 @@ def get_unprocessed_media(
     recent = photosdb.photos(from_date=from_date, to_date=to_date)
     logger.debug(f"Found {len(recent)} items in date range")
 
+    skip_uuids = metrics.get_permanent_failure_uuids()
+    if skip_uuids:
+        logger.debug(f"Skipping {len(skip_uuids)} item(s) with permanent failures")
+
     if reindex:
         tags = expected_model_tags or set()
 
         # Include items whose model tag is missing or not in the pool's tag set.
         def _needs_reindex(p: osxphotos.PhotoInfo) -> bool:
-            if p.hidden:
+            if p.hidden or p.uuid in skip_uuids:
                 return False
             keywords = set(p.keywords or ())
             if keywords & tags:
@@ -63,8 +69,12 @@ def get_unprocessed_media(
 
         items = [p for p in recent if _needs_reindex(p)]
     else:
-        # Filter: no keywords, not hidden
-        items = [p for p in recent if not p.keywords and not p.hidden]
+        # Filter: no keywords, not hidden, not a known-permanent failure
+        items = [
+            p
+            for p in recent
+            if not p.keywords and not p.hidden and p.uuid not in skip_uuids
+        ]
 
     # Filter by media type
     if photo and not video:

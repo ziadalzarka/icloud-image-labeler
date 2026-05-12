@@ -10,6 +10,12 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = str(Path.home() / ".image-labeler" / "metrics.db")
 
+# Error-message substrings that indicate an item will fail again on every
+# subsequent run (no video stream, corrupt MP4 atoms, etc.). Discovery uses
+# this list to skip known-unrecoverable items. To force a retry, delete the
+# offending row from item_metrics.
+PERMANENT_FAILURE_PATTERNS: tuple[str, ...] = ("No usable video source",)
+
 _local = threading.local()
 
 
@@ -95,6 +101,18 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, col_type: 
     existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
     if column not in existing:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+
+
+def get_permanent_failure_uuids() -> set[str]:
+    """Return UUIDs whose last attempt hit a known-unrecoverable error.
+
+    See ``PERMANENT_FAILURE_PATTERNS`` for the allowlist of substrings.
+    """
+    conn = _get_conn()
+    clauses = " OR ".join("error_message LIKE ?" for _ in PERMANENT_FAILURE_PATTERNS)
+    sql = f"SELECT uuid FROM item_metrics WHERE status='error' AND ({clauses})"
+    params = [f"%{p}%" for p in PERMANENT_FAILURE_PATTERNS]
+    return {row[0] for row in conn.execute(sql, params)}
 
 
 def record_item(
