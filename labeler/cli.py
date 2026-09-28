@@ -1,6 +1,7 @@
 """Argparse CLI with run, daemon, config, and metrics subcommands."""
 
 import argparse
+import gc
 import json
 import logging
 import sys
@@ -138,37 +139,45 @@ def _run(args, cfg):
 
     try:
         while not is_shutting_down():
-            if args.uuid:
-                import osxphotos
+            keep_running = _process_one_cycle(args, rc, pool, discover)
+            gc.collect()
 
-                photosdb = osxphotos.PhotosDB()
-                items = [p for u in args.uuid for p in photosdb.photos(uuid=[u])]
-                if not items:
-                    logger.error(f"No photos found for UUIDs: {args.uuid}")
-                    return
-                logger.info(f"Processing {len(items)} item(s) by UUID")
-            else:
-                items = discover()
-            if items:
-                process_batch(
-                    items,
-                    server_pool=pool,
-                    video_frames=rc["video_frames"],
-                    max_dimension=rc["max_dimension"],
-                    write=rc["write"],
-                    discover_fn=discover,
-                    refresh_interval=DEFAULT_REFRESH_INTERVAL,
-                )
-            else:
-                logger.info("No unprocessed media found.")
-
-            if not rc["loop"] or is_shutting_down():
+            if not keep_running or not rc["loop"] or is_shutting_down():
                 break
             logger.info(f"Sleeping {rc['poll_interval']}s until next cycle...")
             if shutdown_wait(rc["poll_interval"]):
                 break
     except KeyboardInterrupt:
         logger.info("Interrupted, exiting.")
+
+
+def _process_one_cycle(args, rc, pool, discover) -> bool:
+    if args.uuid:
+        import osxphotos
+
+        photosdb = osxphotos.PhotosDB()
+        items = [p for u in args.uuid for p in photosdb.photos(uuid=[u])]
+        if not items:
+            logger.error(f"No photos found for UUIDs: {args.uuid}")
+            return False
+        logger.info(f"Processing {len(items)} item(s) by UUID")
+    else:
+        items = discover()
+
+    if items:
+        process_batch(
+            items,
+            server_pool=pool,
+            video_frames=rc["video_frames"],
+            max_dimension=rc["max_dimension"],
+            write=rc["write"],
+            discover_fn=discover,
+            refresh_interval=DEFAULT_REFRESH_INTERVAL,
+        )
+    else:
+        logger.info("No unprocessed media found.")
+
+    return True
 
 
 def _config_cmd(args, cfg):
