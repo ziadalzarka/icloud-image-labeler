@@ -15,13 +15,24 @@ PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / PLIST_NAME
 LOG_PATH = CONFIG_DIR / "daemon.log"
 
 
+def _homebrew_opt_path(path: Path) -> str:
+    parts = path.parts
+    if "Cellar" in parts:
+        cellar = parts.index("Cellar")
+        formula = parts[cellar + 1]
+        opt = Path(*parts[:cellar], "opt", formula, *parts[cellar + 3 :])
+        if opt.exists():
+            return str(opt)
+    return str(path)
+
+
 def _get_python_path() -> str:
-    return sys.executable
+    return _homebrew_opt_path(Path(sys.executable))
 
 
 def _get_labeler_module_path() -> str:
     """Get the path to run `python -m labeler`."""
-    return str(Path(__file__).resolve().parent.parent)
+    return _homebrew_opt_path(Path(__file__).resolve().parent.parent)
 
 
 def _generate_plist() -> dict:
