@@ -22,6 +22,7 @@ logger = logging.getLogger("labeler")
 DEFAULT_REFRESH_INTERVAL = 21600  # seconds (6 hours)
 DEFAULT_DATASETTE_PORT = 8001
 OUTDATED_VIDEOS_PER_CYCLE = 20
+PRE_BATCHING_VIDEO_FRAMES = 5
 
 
 def _setup_logging(verbose: bool = False):
@@ -33,6 +34,11 @@ def _setup_logging(verbose: bool = False):
     # Keep third-party loggers at INFO to avoid dumping base64/HTTP bodies
     for name in ("httpx", "openai", "httpcore"):
         logging.getLogger(name).setLevel(logging.INFO)
+
+
+def _video_labeling_changed(video_frames: int, video_frame_batch: int) -> bool:
+    one_request = video_frame_batch <= 0 or video_frame_batch >= video_frames
+    return not (video_frames == PRE_BATCHING_VIDEO_FRAMES and one_request)
 
 
 def _resolve_servers(args, cfg) -> list[Server]:
@@ -129,7 +135,11 @@ def _run(args, cfg):
     for s in pool.servers():
         logger.info(f"Server: {s.base_url} ({s.model}, threads={s.threads})")
     expected_tags = pool.model_tags() if rc["reindex"] else None
-    expected_video_tag = video_settings_tag(rc["video_frames"], rc["video_frame_batch"])
+    expected_video_tag = (
+        video_settings_tag(rc["video_frames"], rc["video_frame_batch"])
+        if _video_labeling_changed(rc["video_frames"], rc["video_frame_batch"])
+        else None
+    )
     if rc["reindex"]:
         logger.info(
             f"Reindex mode: accepting model tags {sorted(expected_tags)}, "
