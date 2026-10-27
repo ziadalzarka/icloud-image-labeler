@@ -6,10 +6,35 @@ from datetime import datetime, timedelta
 import osxphotos
 
 from . import metrics
+from .writer import TRANSCRIPT_TAG_PREFIX
 
 logger = logging.getLogger(__name__)
 
 _MODEL_TAG_PREFIX = "m:"
+
+
+def _has_transcript(p: osxphotos.PhotoInfo) -> bool:
+    return any(k.startswith(TRANSCRIPT_TAG_PREFIX) for k in p.keywords or ())
+
+
+def is_unlabeled(p: osxphotos.PhotoInfo) -> bool:
+    return all(k.startswith(TRANSCRIPT_TAG_PREFIX) for k in p.keywords or ())
+
+
+def _date_range(
+    days_back: int, to_days: int
+) -> tuple[datetime | None, datetime | None, str]:
+    from_date = datetime.now() - timedelta(days=days_back) if days_back > 0 else None
+    to_date = datetime.now() - timedelta(days=to_days) if to_days > 0 else None
+    if from_date:
+        description = f"since {from_date.strftime('%Y-%m-%d')}"
+        if to_date:
+            description += f" until {to_date.strftime('%Y-%m-%d')}"
+    elif to_date:
+        description = f"until {to_date.strftime('%Y-%m-%d')}"
+    else:
+        description = "all time"
+    return from_date, to_date, description
 
 
 def _needs_reindex(
@@ -90,16 +115,7 @@ def get_unprocessed_media(
     logger.info("Loading Photos library...")
     photosdb = osxphotos.PhotosDB()
 
-    from_date = datetime.now() - timedelta(days=days_back) if days_back > 0 else None
-    to_date = datetime.now() - timedelta(days=to_days) if to_days > 0 else None
-    if from_date:
-        date_range = f"since {from_date.strftime('%Y-%m-%d')}"
-        if to_date:
-            date_range += f" until {to_date.strftime('%Y-%m-%d')}"
-    elif to_date:
-        date_range = f"until {to_date.strftime('%Y-%m-%d')}"
-    else:
-        date_range = "all time"
+    from_date, to_date, date_range = _date_range(days_back, to_days)
     logger.debug(f"Querying media ({date_range})...")
     recent = photosdb.photos(from_date=from_date, to_date=to_date)
     logger.debug(f"Found {len(recent)} items in date range")
@@ -119,11 +135,11 @@ def get_unprocessed_media(
             and _needs_reindex(p, tags, expected_video_tag)
         ]
     else:
-        # Filter: no keywords, not hidden, not a known-permanent failure
+        # Filter: unlabeled, not hidden, not a known-permanent failure
         items = [
             p
             for p in recent
-            if not p.keywords and not p.hidden and p.uuid not in skip_uuids
+            if is_unlabeled(p) and not p.hidden and p.uuid not in skip_uuids
         ]
         items += _outdated_videos(
             recent,
@@ -158,3 +174,29 @@ def get_unprocessed_media(
             f"Selected {len(selected)} item(s), newest: {selected[0].original_filename}"
         )
     return selected
+
+
+def get_untranscribed_videos(
+    limit: int = 0,
+    days_back: int = 0,
+    to_days: int = 0,
+    uuids: list[str] | None = None,
+) -> list[osxphotos.PhotoInfo]:
+    photosdb = osxphotos.PhotosDB()
+    if uuids:
+        return [p for p in photosdb.photos(uuid=uuids) if not p.isphoto]
+
+    from_date, to_date, date_range = _date_range(days_back, to_days)
+    logger.debug(f"Querying videos to transcribe ({date_range})...")
+    videos = photosdb.photos(
+        images=False, movies=True, from_date=from_date, to_date=to_date
+    )
+    skip_uuids = metrics.get_permanent_failure_uuids()
+    items = [
+        p
+        for p in videos
+        if not p.hidden and p.uuid not in skip_uuids and not _has_transcript(p)
+    ]
+    logger.info(f"Found {len(items)} videos without a transcript")
+    items.sort(key=lambda p: p.date_added or p.date, reverse=True)
+    return items[:limit] if limit > 0 else items

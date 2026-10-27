@@ -9,13 +9,19 @@ from importlib.metadata import version
 
 from labeler import config, daemon, metrics
 from labeler.checks import check_dependencies
-from labeler.discovery import get_unprocessed_media
+from labeler.discovery import (
+    get_unprocessed_media,
+    get_untranscribed_videos,
+    is_unlabeled,
+)
 from labeler.init import run_init
 from labeler.llm import Server, ServerPool, video_settings_tag
 from labeler.processor import process_batch
 from labeler.shutdown import install_handlers as install_signal_handlers
 from labeler.shutdown import is_shutting_down
 from labeler.shutdown import wait as shutdown_wait
+from labeler.transcriber import INSTALL_HINT, Transcriber
+from labeler.transcriber import is_available as transcription_available
 
 logger = logging.getLogger("labeler")
 
@@ -109,6 +115,10 @@ def _resolve_config(args, cfg):
         ),
         "photo": args.photo if args.photo is not None else cfg["photo"],
         "video": args.video if args.video is not None else cfg["video"],
+        "transcribe": (
+            args.transcribe if args.transcribe is not None else cfg["transcribe"]
+        ),
+        "whisper_model": args.whisper_model or cfg["whisper_model"],
     }
 
     resolved["write"] = cfg["write"]
@@ -124,17 +134,40 @@ def _resolve_config(args, cfg):
     return resolved
 
 
+def _create_transcriber(rc) -> Transcriber | None:
+    if not rc["transcribe"]:
+        return None
+    if not transcription_available():
+        logger.error(
+            "Transcription needs mlx-whisper, which runs on Apple Silicon only. "
+            f"Install it with: {INSTALL_HINT}"
+        )
+        return None
+    return Transcriber(rc["whisper_model"], write=rc["write"])
+
+
 def _run(args, cfg):
     """One-shot or loop processing."""
     rc = _resolve_config(args, cfg)
-    if not rc["servers"]:
+    transcriber = _create_transcriber(rc)
+    labeling = rc["photo"] or rc["video"]
+    if not labeling and transcriber is None:
+        logger.error(
+            "Nothing to process: photo and video labeling are off "
+            "and transcription isn't running."
+        )
+        return
+    if labeling and not rc["servers"]:
         logger.error("No LLM servers configured. Run 'icloud-image-labeler init'.")
         return
 
-    pool = ServerPool(rc["servers"])
-    for s in pool.servers():
-        logger.info(f"Server: {s.base_url} ({s.model}, threads={s.threads})")
-    expected_tags = pool.model_tags() if rc["reindex"] else None
+    pool = ServerPool(rc["servers"]) if labeling else None
+    if pool:
+        for s in pool.servers():
+            logger.info(f"Server: {s.base_url} ({s.model}, threads={s.threads})")
+    if transcriber:
+        logger.info(f"Transcription: {transcriber.model}")
+    expected_tags = pool.model_tags() if pool and rc["reindex"] else None
     expected_video_tag = (
         video_settings_tag(rc["video_frames"], rc["video_frame_batch"])
         if _video_labeling_changed(rc["video_frames"], rc["video_frame_batch"])
@@ -159,24 +192,44 @@ def _run(args, cfg):
             outdated_video_limit=OUTDATED_VIDEOS_PER_CYCLE,
         )
 
-    try:
-        while not is_shutting_down():
-            keep_running, more_outdated = _process_one_cycle(args, rc, pool, discover)
-            gc.collect()
+    transcription = None
+    if transcriber:
+        transcription = transcriber.start(
+            lambda: get_untranscribed_videos(
+                limit=rc["limit"],
+                days_back=rc["days"],
+                to_days=rc["to_days"],
+                uuids=args.uuid,
+            ),
+            loop=rc["loop"],
+            poll_interval=rc["poll_interval"],
+        )
 
-            if not keep_running or not rc["loop"] or is_shutting_down():
-                break
-            if more_outdated:
-                logger.info(
-                    "More videos labeled with other frame settings remain; "
-                    "starting the next cycle now"
-                )
-                continue
-            logger.info(f"Sleeping {rc['poll_interval']}s until next cycle...")
-            if shutdown_wait(rc["poll_interval"]):
-                break
+    try:
+        if pool:
+            _label_loop(args, rc, pool, discover)
+        if transcription:
+            transcription.join()
     except KeyboardInterrupt:
         logger.info("Interrupted, exiting.")
+
+
+def _label_loop(args, rc, pool, discover):
+    while not is_shutting_down():
+        keep_running, more_outdated = _process_one_cycle(args, rc, pool, discover)
+        gc.collect()
+
+        if not keep_running or not rc["loop"] or is_shutting_down():
+            break
+        if more_outdated:
+            logger.info(
+                "More videos labeled with other frame settings remain; "
+                "starting the next cycle now"
+            )
+            continue
+        logger.info(f"Sleeping {rc['poll_interval']}s until next cycle...")
+        if shutdown_wait(rc["poll_interval"]):
+            break
 
 
 def _process_one_cycle(args, rc, pool, discover) -> tuple[bool, bool]:
@@ -206,7 +259,7 @@ def _process_one_cycle(args, rc, pool, discover) -> tuple[bool, bool]:
         discover_fn=discover,
         refresh_interval=DEFAULT_REFRESH_INTERVAL,
     )
-    outdated = sum(1 for p in items if not p.isphoto and p.keywords)
+    outdated = sum(1 for p in items if not p.isphoto and not is_unlabeled(p))
     return True, outdated >= OUTDATED_VIDEOS_PER_CYCLE and videos_ok > 0
 
 
@@ -323,6 +376,18 @@ def _build_run_parser(subparsers):
     run_parser.add_argument("--no-photo", dest="photo", action="store_false")
     run_parser.add_argument("--video", action="store_true", default=None)
     run_parser.add_argument("--no-video", dest="video", action="store_false")
+    run_parser.add_argument(
+        "--transcribe",
+        action="store_true",
+        default=None,
+        help="Transcribe speech in videos with Whisper (needs mlx-whisper)",
+    )
+    run_parser.add_argument("--no-transcribe", dest="transcribe", action="store_false")
+    run_parser.add_argument(
+        "--whisper-model",
+        default=None,
+        help="Whisper model for transcription (MLX format, e.g. a Hugging Face repo)",
+    )
     run_parser.add_argument("--write", action="store_true", default=None)
     run_parser.add_argument("--dry-run", action="store_true", default=None)
     run_parser.add_argument("--base-url", default=None)

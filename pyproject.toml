@@ -26,6 +26,9 @@ dependencies = [
     "datasette-dashboards",
 ]
 
+[project.optional-dependencies]
+transcribe = ["mlx-whisper"]
+
 [tool.setuptools.package-data]
 labeler = ["dashboard.yaml"]
 

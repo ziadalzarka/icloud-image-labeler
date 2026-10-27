@@ -1,6 +1,6 @@
 # iCloud Image Labeler
 
-Auto-label your Apple Photos library using any OpenAI-compatible LLM. Generates keywords, titles, descriptions, and OCR text for photos and videos, then writes the metadata back into Photos.app.
+Auto-label your Apple Photos library using any OpenAI-compatible LLM. Generates keywords, titles, descriptions, and OCR text for photos and videos, then writes the metadata back into Photos.app. Optionally transcribes speech in videos with a local [Whisper](https://github.com/openai/whisper) model, in any of its 99 languages.
 
 Works with any OpenAI-compatible API — designed for [LM Studio](https://lmstudio.ai/) but also works with Ollama, vLLM, or cloud providers.
 
@@ -18,12 +18,41 @@ Photos.app ──> Discovery ──> Export ──> LLM ──> Writer ──> P
 
 Photos are processed in parallel (configurable thread count), videos sequentially.
 
+### Transcription (optional)
+
+```
+Photos.app ──> Discovery ──> Export ──> ffmpeg ──> Whisper ──> Writer ──> Photos.app
+               (no trans:)   (video)    (audio)    (mlx-whisper)
+```
+
+Transcription is separate from labeling. It has its own check (videos with no `trans:` keyword) and runs in its own thread, at the same time as labeling, with its own loop in `--loop` mode. Each video gets one keyword:
+
+| Keyword | Meaning |
+|---------|---------|
+| `trans:<text>` | What was said in the video |
+| `trans:no-speech` | The video has audio, but Whisper found no speech in it |
+| `trans:no-audio` | The video has no audio track |
+
+Videos with any `trans:` keyword are not transcribed again. Whisper sometimes invents text on silent audio (often "Thank you for watching"), so segments that Whisper rates as more likely silence than speech are dropped. Labeling keeps `trans:` keywords when it rewrites a video's keywords, and a video with only a `trans:` keyword still counts as unlabeled.
+
+### Keywords
+
+Besides the descriptive keywords, the tool adds:
+
+| Keyword | Meaning |
+|---------|---------|
+| `m:<hash>` | Which model labeled the item |
+| `v:<hash>` | Which video frame settings were used |
+| `ocr:<text>` | Text visible in the photo or video |
+| `trans:...` | Speech transcript (see above) |
+
 ## Requirements
 
 - macOS (requires Photos.app and AppleScript)
 - Python 3.10+
 - [ffmpeg](https://ffmpeg.org/) (for video frame extraction)
 - An OpenAI-compatible LLM API ([LM Studio](https://lmstudio.ai/), Ollama, etc.)
+- For transcription only: Apple Silicon and [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
 
 ## Installation
 
@@ -31,6 +60,23 @@ Photos are processed in parallel (configurable thread count), videos sequentiall
 brew tap ziadalzarka/tap
 brew install icloud-image-labeler
 ```
+
+### Transcription
+
+Transcription is optional and off by default. It needs `mlx-whisper`, which only runs on Apple Silicon:
+
+```sh
+# Homebrew install
+$(brew --prefix icloud-image-labeler)/libexec/bin/pip install mlx-whisper
+
+# pip install
+pip install 'icloud-image-labeler[transcribe]'
+
+# Turn it on
+icloud-image-labeler config set transcribe true
+```
+
+The default model, `mlx-community/whisper-large-v3-mlx` (about 3 GB), downloads on first use. Any Whisper model in MLX format works; set it with `config set whisper_model <hugging face repo>`.
 
 ### iCloud Settings
 
@@ -70,6 +116,12 @@ icloud-image-labeler run --loop
 # Use a specific model or API endpoint
 icloud-image-labeler run --base-url http://localhost:1234/v1 --model my-model
 
+# Transcribe speech in videos while labeling
+icloud-image-labeler run --transcribe
+
+# Transcribe only, no labeling
+icloud-image-labeler run --no-photo --no-video --transcribe
+
 # Debug logging
 icloud-image-labeler run -v
 ```
@@ -83,6 +135,8 @@ icloud-image-labeler run -v
 | `--to-days N` | Skip most recent N days |
 | `--photo` / `--no-photo` | Include/exclude photos |
 | `--video` / `--no-video` | Include/exclude videos |
+| `--transcribe` / `--no-transcribe` | Transcribe speech in videos (needs mlx-whisper) |
+| `--whisper-model REPO` | Whisper model for transcription |
 | `--write` | Force write metadata |
 | `--dry-run` | Preview without writing |
 | `--base-url URL` | LLM API endpoint |
@@ -123,6 +177,8 @@ If no config exists when you run `icloud-image-labeler run`, the setup wizard la
 | `max_dimension` | `1024` | Max image dimension sent to LLM (px) |
 | `photo` | `true` | Include photos in processing |
 | `video` | `true` | Include videos in processing |
+| `transcribe` | `false` | Transcribe speech in videos (needs mlx-whisper) |
+| `whisper_model` | `mlx-community/whisper-large-v3-mlx` | Whisper model for transcription |
 | `write` | `true` | Write metadata to Photos.app |
 | `poll_interval` | `300` | Seconds between cycles in loop/daemon mode |
 
@@ -164,6 +220,7 @@ labeler/
   exporter.py   — photo export (HEIC/iCloud fallbacks), video frame extraction
   llm.py        — OpenAI-compatible client, JSON parsing, retry logic
   processor.py  — batch orchestration, parallel photos + sequential videos
+  transcriber.py — optional Whisper transcription of videos, in its own thread
   writer.py     — PhotoScript metadata writes (thread-safe)
   metrics.py    — SQLite metrics recording
   daemon.py     — macOS Launch Agent lifecycle

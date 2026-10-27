@@ -21,6 +21,7 @@ SHORT_VIDEO_THRESHOLD_S = 0.5
 MIN_FRAME_SPACING_S = 0.5
 PHOTOS_APP_QUIT_TIMEOUT_S = 20
 PHOTOS_APP_STARTUP_WAIT_S = 10
+AUDIO_SAMPLE_RATE = 16000
 
 
 def _resize_if_needed(img, max_dim: int):
@@ -139,15 +140,14 @@ def export_photo_as_base64(
         return _encode_as_jpeg(img, max_dimension, tmpdir)
 
 
-def _has_video_stream(path: str) -> bool:
-    """Return True if ffprobe finds at least one decodable video stream."""
+def _has_stream(path: str, stream: str) -> bool:
     result = subprocess.run(
         [
             "ffprobe",
             "-v",
             "error",
             "-select_streams",
-            "v:0",
+            stream,
             "-show_entries",
             "stream=codec_name",
             "-of",
@@ -158,6 +158,11 @@ def _has_video_stream(path: str) -> bool:
         text=True,
     )
     return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _has_video_stream(path: str) -> bool:
+    """Return True if ffprobe finds at least one decodable video stream."""
+    return _has_stream(path, "v:0")
 
 
 def _photos_app_running() -> bool:
@@ -385,3 +390,41 @@ def export_video_frames_as_base64(
         return _extract_all_frames(
             video_path, num_frames, duration, max_dimension, tmpdir
         )
+
+
+def _decode_audio(video_path, filename) -> bytes:
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "error",
+            "-i",
+            video_path,
+            "-map",
+            "0:a:0",
+            "-ac",
+            "1",
+            "-ar",
+            str(AUDIO_SAMPLE_RATE),
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            "-",
+        ],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        error = result.stderr.decode(errors="replace").strip()[:200]
+        raise RuntimeError(f"Audio extraction failed for {filename}: {error}")
+    return result.stdout
+
+
+def export_video_audio(photo: osxphotos.PhotoInfo) -> bytes | None:
+    logger.debug(f"Exporting video audio (missing={photo.ismissing})...")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        video_path = _resolve_video_path(photo, tmpdir)
+        if not _has_stream(video_path, "a:0"):
+            return None
+        return _decode_audio(video_path, photo.original_filename)

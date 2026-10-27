@@ -14,6 +14,10 @@ _write_lock = threading.Lock()
 
 PHOTOS_APP_STARTUP_WAIT = 3  # seconds to wait for Photos.app to start
 
+TRANSCRIPT_TAG_PREFIX = "trans:"
+NO_AUDIO_TAG = f"{TRANSCRIPT_TAG_PREFIX}no-audio"
+NO_SPEECH_TAG = f"{TRANSCRIPT_TAG_PREFIX}no-speech"
+
 
 def _ensure_photos_app():
     """Check if Photos.app is running; open it if not."""
@@ -24,6 +28,10 @@ def _ensure_photos_app():
         import time
 
         time.sleep(PHOTOS_APP_STARTUP_WAIT)
+
+
+def _transcript_keywords(keywords: list[str]) -> list[str]:
+    return [k for k in keywords if k.startswith(TRANSCRIPT_TAG_PREFIX)]
 
 
 def write_metadata(
@@ -59,7 +67,20 @@ def write_metadata(
     with _write_lock:
         logger.debug("Writing metadata to Photos.app...")
         photo = photoscript.Photo(photo_uuid)
-        photo.keywords = keywords
+        photo.keywords = keywords + _transcript_keywords(photo.keywords)
         photo.title = labels.get("title", "")
         photo.description = labels.get("description", "")
         logger.info(f"Written {len(keywords)} keywords, title, and description")
+
+
+def write_transcript(photo_uuid: str, keyword: str, write: bool = True):
+    if not write:
+        logger.info(f"[DRY RUN] Would write keyword: {keyword}")
+        return
+
+    _ensure_photos_app()
+
+    with _write_lock:
+        photo = photoscript.Photo(photo_uuid)
+        other = [k for k in photo.keywords if not k.startswith(TRANSCRIPT_TAG_PREFIX)]
+        photo.keywords = [*other, keyword]

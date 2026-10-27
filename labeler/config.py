@@ -21,6 +21,8 @@ DEFAULTS = {
     "max_dimension": 1024,
     "photo": True,
     "video": True,
+    "transcribe": False,
+    "whisper_model": "mlx-community/whisper-large-v3-mlx",
     "write": True,
 }
 
