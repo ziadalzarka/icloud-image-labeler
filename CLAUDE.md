@@ -19,7 +19,7 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
   - `llm.py` — OpenAI-compatible LLM client, response parsing, retry
   - `processor.py` — batch orchestration, parallel photos then sequential videos, error tracking
   - `transcriber.py` — optional mlx-whisper transcription of videos, run in its own thread alongside labeling
-  - `migrate.py` — `migrate lowercase-keywords` command for existing libraries
+  - `migrate.py` — `migrate normalize-keywords` command for existing libraries
   - `writer.py` — PhotoScript metadata writes with thread-safe locking
 
 ## Key Constraints
@@ -32,7 +32,8 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
 - The video merge request sends `reasoning_effort="none"` (thinking made it take 110-300s); servers that reject the parameter get the request again without it
 - Qwen models return `<think>` blocks — stripped before JSON parsing in `llm.py`
 - Images resized to `max_dimension` before sending to LLM to avoid context window exhaustion
-- All keywords are written lowercase and deduplicated (`lowercase_keywords` in `writer.py`)
+- All keywords are written lowercase, without commas, and deduplicated (`normalize_keywords` in `writer.py`). Photos' Info window splits keywords at commas when the keyword field is clicked
+- Under Homebrew the daemon plist uses `/opt/homebrew/opt/icloud-image-labeler/...`, not the versioned Cellar path that `brew upgrade` deletes (`_homebrew_opt_path` in `daemon.py`)
 - Transcription is optional (`transcribe` config, `mlx-whisper` is an optional extra) and separate from labeling: its own discovery (videos without a `trans:` keyword), its own thread and loop. Every video gets one of `trans:<text>`, `trans:no-speech` or `trans:no-audio` so it is not transcribed again
 - Labeling keeps `trans:` keywords when it rewrites keywords, and a video whose only keywords are `trans:` ones still counts as unlabeled (`is_unlabeled` in `discovery.py`)
 - Whisper segments with `no_speech_prob` above 0.5 are dropped; Whisper invents text like "Thank you for watching" on silent audio

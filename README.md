@@ -37,7 +37,7 @@ Videos with any `trans:` keyword are not transcribed again. Whisper sometimes in
 
 ### Keywords
 
-All keywords the tool writes are lowercase, including `ocr:` and `trans:` text. Besides the descriptive keywords, the tool adds:
+All keywords the tool writes are lowercase and have no commas, including `ocr:` and `trans:` text. The keyword field in Photos' Info window splits a keyword at every comma when you click into it, so commas between digits are dropped (`3,000` becomes `3000`) and other commas become a space. Besides the descriptive keywords, the tool adds:
 
 | Keyword | Meaning |
 |---------|---------|
@@ -184,14 +184,14 @@ If no config exists when you run `icloud-image-labeler run`, the setup wizard la
 
 ## Migrations
 
-Libraries labeled by versions before keywords were lowercased can be converted with:
+Libraries labeled by earlier versions can be converted to lowercase keywords without commas with:
 
 ```sh
-icloud-image-labeler migrate lowercase-keywords --dry-run   # Show what would change
-icloud-image-labeler migrate lowercase-keywords             # Lowercase every keyword in the library
+icloud-image-labeler migrate normalize-keywords --dry-run   # Show what would change
+icloud-image-labeler migrate normalize-keywords             # Normalize every keyword in the library
 ```
 
-The migration only touches items that still have an uppercase keyword, so it can be stopped and run again. Before changing an item, it saves the item's original keywords to `~/.image-labeler/backups/keywords-<time>.jsonl`.
+This changes every keyword in the library, including ones you added by hand. It only touches items that still need changing, so it can be stopped and run again. Before changing an item, it saves the item's original keywords to `~/.image-labeler/backups/keywords-<time>.jsonl`. It writes to Photos several times a second, so Photos is slow to respond while it runs. `lowercase-keywords` from 0.2.0 still works and does the same thing.
 
 ## Daemon
 
@@ -232,7 +232,7 @@ labeler/
   llm.py        — OpenAI-compatible client, JSON parsing, retry logic
   processor.py  — batch orchestration, parallel photos + sequential videos
   transcriber.py — optional Whisper transcription of videos, in its own thread
-  migrate.py    — one-off keyword migrations (lowercase-keywords)
+  migrate.py    — one-off keyword migrations (normalize-keywords)
   writer.py     — PhotoScript metadata writes (thread-safe)
   metrics.py    — SQLite metrics recording
   daemon.py     — macOS Launch Agent lifecycle

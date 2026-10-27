@@ -8,7 +8,7 @@ import photoscript
 
 from labeler.config import CONFIG_DIR
 from labeler.shutdown import is_shutting_down
-from labeler.writer import lowercase_keywords
+from labeler.writer import normalize_keywords
 
 logger = logging.getLogger(__name__)
 
@@ -16,34 +16,34 @@ BACKUP_DIR = CONFIG_DIR / "backups"
 PROGRESS_EVERY = 500
 
 
-def _has_uppercase(keywords: list[str]) -> bool:
-    return any(k != k.lower() for k in keywords)
+def _needs_normalizing(keywords: list[str]) -> bool:
+    return normalize_keywords(keywords) != keywords
 
 
-def _lowercase_item(uuid: str, backup) -> bool:
+def _normalize_item(uuid: str, backup) -> bool:
     photo = photoscript.Photo(uuid)
     keywords = photo.keywords
-    lowered = lowercase_keywords(keywords)
-    if lowered == keywords:
+    normalized = normalize_keywords(keywords)
+    if normalized == keywords:
         return False
     backup.write(json.dumps({"uuid": uuid, "keywords": keywords}, ensure_ascii=False))
     backup.write("\n")
     backup.flush()
-    photo.keywords = lowered
+    photo.keywords = normalized
     return True
 
 
-def lowercase_library_keywords(write: bool = True, limit: int = 0):
+def normalize_library_keywords(write: bool = True, limit: int = 0):
     logger.info("Loading Photos library...")
     photosdb = osxphotos.PhotosDB()
-    items = [p for p in photosdb.photos() if _has_uppercase(p.keywords or [])]
-    logger.info(f"Found {len(items)} items with uppercase keywords")
+    items = [p for p in photosdb.photos() if _needs_normalizing(p.keywords or [])]
+    logger.info(f"Found {len(items)} items with keywords to normalize")
     if limit > 0:
         items = items[:limit]
     if not write:
         for item in items[:10]:
-            lowered = lowercase_keywords(item.keywords)
-            logger.info(f"[DRY RUN] {item.original_filename}: {lowered}")
+            normalized = normalize_keywords(item.keywords)
+            logger.info(f"[DRY RUN] {item.original_filename}: {normalized}")
         return
     if not items:
         return
@@ -59,7 +59,7 @@ def lowercase_library_keywords(write: bool = True, limit: int = 0):
             if is_shutting_down():
                 break
             try:
-                if _lowercase_item(item.uuid, backup):
+                if _normalize_item(item.uuid, backup):
                     changed += 1
             except Exception as e:
                 failed += 1
@@ -68,7 +68,7 @@ def lowercase_library_keywords(write: bool = True, limit: int = 0):
                 elapsed = time.monotonic() - t_start
                 remaining = elapsed / position * (len(items) - position)
                 logger.info(
-                    f"[{position}/{len(items)}] {changed} lowercased, "
+                    f"[{position}/{len(items)}] {changed} normalized, "
                     f"{failed} failed, about {remaining / 60:.0f} min left"
                 )
-    logger.info(f"Done: {changed} items lowercased, {failed} failed")
+    logger.info(f"Done: {changed} items normalized, {failed} failed")

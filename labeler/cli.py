@@ -306,7 +306,7 @@ def _daemon_cmd(args):
 def _migrate_cmd(args):
     install_signal_handlers()
     try:
-        migrate.lowercase_library_keywords(
+        migrate.normalize_library_keywords(
             write=not args.dry_run, limit=args.limit or 0
         )
     except KeyboardInterrupt:
@@ -482,7 +482,9 @@ def _build_parser():
     migrate_parser = subparsers.add_parser(
         "migrate", help="Update keywords already in the Photos library"
     )
-    migrate_parser.add_argument("migration", choices=["lowercase-keywords"])
+    migrate_parser.add_argument(
+        "migration", choices=["normalize-keywords", "lowercase-keywords"]
+    )
     migrate_parser.add_argument("--dry-run", action="store_true", default=False)
     migrate_parser.add_argument("--limit", type=int, default=None)
 

@@ -1,6 +1,7 @@
 """PhotoScript metadata writes to macOS Photos.app."""
 
 import logging
+import re
 import subprocess
 import threading
 
@@ -18,6 +19,9 @@ TRANSCRIPT_TAG_PREFIX = "trans:"
 NO_AUDIO_TAG = f"{TRANSCRIPT_TAG_PREFIX}no-audio"
 NO_SPEECH_TAG = f"{TRANSCRIPT_TAG_PREFIX}no-speech"
 
+_DIGIT_COMMA_RE = re.compile(r"(?<=\d),(?=\d)")
+_COMMA_RE = re.compile(r"\s*(?:,\s*)+")
+
 
 def _ensure_photos_app():
     """Check if Photos.app is running; open it if not."""
@@ -34,8 +38,14 @@ def _transcript_keywords(keywords: list[str]) -> list[str]:
     return [k for k in keywords if k.startswith(TRANSCRIPT_TAG_PREFIX)]
 
 
-def lowercase_keywords(keywords: list[str]) -> list[str]:
-    return list(dict.fromkeys(k.lower() for k in keywords))
+def normalize_keyword(keyword: str) -> str:
+    keyword = _DIGIT_COMMA_RE.sub("", keyword.lower())
+    return _COMMA_RE.sub(" ", keyword).strip()
+
+
+def normalize_keywords(keywords: list[str]) -> list[str]:
+    normalized = (normalize_keyword(k) for k in keywords)
+    return list(dict.fromkeys(k for k in normalized if k))
 
 
 def write_metadata(
@@ -51,10 +61,10 @@ def write_metadata(
         logger.info("[DRY RUN] Would write:")
         logger.info(f"  Title: {labels.get('title', '')}")
         logger.info(f"  Description: {labels.get('description', '')}")
-        keywords = lowercase_keywords(labels.get("keywords", []))
+        keywords = normalize_keywords(labels.get("keywords", []))
         logger.info(f"  Keywords: {', '.join(keywords)}")
         if labels.get("ocr_text"):
-            logger.info(f"  OCR Text: {labels['ocr_text'].lower()}")
+            logger.info(f"  OCR Text: {normalize_keyword(labels['ocr_text'])}")
         logger.info(f"  Model tag: {tag}")
         if video_tag:
             logger.info(f"  Video tag: {video_tag}")
@@ -72,7 +82,7 @@ def write_metadata(
     with _write_lock:
         logger.debug("Writing metadata to Photos.app...")
         photo = photoscript.Photo(photo_uuid)
-        photo.keywords = lowercase_keywords(
+        photo.keywords = normalize_keywords(
             keywords + _transcript_keywords(photo.keywords)
         )
         photo.title = labels.get("title", "")
@@ -82,7 +92,7 @@ def write_metadata(
 
 def write_transcript(photo_uuid: str, keyword: str, write: bool = True):
     if not write:
-        logger.info(f"[DRY RUN] Would write keyword: {keyword.lower()}")
+        logger.info(f"[DRY RUN] Would write keyword: {normalize_keyword(keyword)}")
         return
 
     _ensure_photos_app()
@@ -90,4 +100,4 @@ def write_transcript(photo_uuid: str, keyword: str, write: bool = True):
     with _write_lock:
         photo = photoscript.Photo(photo_uuid)
         other = [k for k in photo.keywords if not k.startswith(TRANSCRIPT_TAG_PREFIX)]
-        photo.keywords = lowercase_keywords([*other, keyword])
+        photo.keywords = normalize_keywords([*other, keyword])

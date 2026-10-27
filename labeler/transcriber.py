@@ -13,6 +13,7 @@ from labeler.writer import (
     NO_AUDIO_TAG,
     NO_SPEECH_TAG,
     TRANSCRIPT_TAG_PREFIX,
+    normalize_keyword,
     write_transcript,
 )
 
@@ -113,7 +114,7 @@ class Transcriber:
         t_start = time.monotonic()
         keyword, language = _transcript_keyword(item, self.model)
         write_transcript(item.uuid, keyword, write=self.write)
-        preview = keyword.lower()[:LOG_PREVIEW_CHARS]
+        preview = normalize_keyword(keyword)[:LOG_PREVIEW_CHARS]
         if len(keyword) > LOG_PREVIEW_CHARS:
             preview += "..."
         logger.info(
