@@ -13,6 +13,7 @@ from labeler.discovery import (
     get_unprocessed_media,
     get_untranscribed_videos,
     is_unlabeled,
+    load_photos_db,
 )
 from labeler.init import run_init
 from labeler.llm import Server, ServerPool, video_settings_tag
@@ -234,9 +235,7 @@ def _label_loop(args, rc, pool, discover):
 
 def _process_one_cycle(args, rc, pool, discover) -> tuple[bool, bool]:
     if args.uuid:
-        import osxphotos
-
-        photosdb = osxphotos.PhotosDB()
+        photosdb = load_photos_db()
         items = [p for u in args.uuid for p in photosdb.photos(uuid=[u])]
         if not items:
             logger.error(f"No photos found for UUIDs: {args.uuid}")

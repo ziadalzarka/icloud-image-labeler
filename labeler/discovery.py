@@ -1,6 +1,7 @@
 """Query macOS Photos library for unprocessed media via osxphotos."""
 
 import logging
+import threading
 from datetime import datetime, timedelta
 
 import osxphotos
@@ -11,6 +12,13 @@ from .writer import TRANSCRIPT_TAG_PREFIX
 logger = logging.getLogger(__name__)
 
 _MODEL_TAG_PREFIX = "m:"
+
+_photosdb_lock = threading.Lock()
+
+
+def load_photos_db() -> osxphotos.PhotosDB:
+    with _photosdb_lock:
+        return osxphotos.PhotosDB()
 
 
 def _has_transcript(p: osxphotos.PhotoInfo) -> bool:
@@ -113,7 +121,7 @@ def get_unprocessed_media(
     if reindex and not expected_model_tags:
         raise ValueError("reindex=True requires expected_model_tags")
     logger.info("Loading Photos library...")
-    photosdb = osxphotos.PhotosDB()
+    photosdb = load_photos_db()
 
     from_date, to_date, date_range = _date_range(days_back, to_days)
     logger.debug(f"Querying media ({date_range})...")
@@ -182,7 +190,7 @@ def get_untranscribed_videos(
     to_days: int = 0,
     uuids: list[str] | None = None,
 ) -> list[osxphotos.PhotoInfo]:
-    photosdb = osxphotos.PhotosDB()
+    photosdb = load_photos_db()
     if uuids:
         return [p for p in photosdb.photos(uuid=uuids) if not p.isphoto]
 

@@ -24,6 +24,7 @@ NO_SPEECH_PROB_LIMIT = 0.5
 MAX_FAILURES = 3
 PCM_SCALE = 32768.0
 LOG_PREVIEW_CHARS = 80
+DISCOVERY_RETRY_S = 300
 
 
 def is_available() -> bool:
@@ -79,36 +80,38 @@ class Transcriber:
 
     def _run(self, discover, loop: bool, poll_interval: int):
         while not is_shutting_down():
-            self._run_pass(discover)
+            found = self._run_pass(discover)
             gc.collect()
             if not loop:
                 return
-            logger.info(f"Transcription sleeping {poll_interval}s until next pass...")
-            if shutdown_wait(poll_interval):
+            wait = poll_interval if found else DISCOVERY_RETRY_S
+            logger.info(f"Transcription sleeping {wait}s until next pass...")
+            if shutdown_wait(wait):
                 return
 
-    def _run_pass(self, discover):
+    def _run_pass(self, discover) -> bool:
         try:
             items = [
                 p for p in discover() if self._failures.get(p.uuid, 0) < MAX_FAILURES
             ]
         except Exception:
             logger.exception("Looking for videos to transcribe failed")
-            return
+            return False
         if not items:
             logger.info("No videos to transcribe.")
-            return
+            return True
 
         logger.info(f"Transcribing {len(items)} videos with {self.model}...")
         for position, item in enumerate(items, start=1):
             if is_shutting_down():
-                return
+                return True
             progress = f"[transcribe {position}/{len(items)}]"
             try:
                 self._transcribe(item, progress)
             except Exception as e:
                 self._failures[item.uuid] = self._failures.get(item.uuid, 0) + 1
                 logger.error(f"{progress} Failed: {item.original_filename}: {e}")
+        return True
 
     def _transcribe(self, item: osxphotos.PhotoInfo, progress: str):
         t_start = time.monotonic()
