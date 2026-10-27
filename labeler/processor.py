@@ -13,7 +13,13 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 from labeler import metrics
 from labeler.exporter import export_photo_as_base64, export_video_frames_as_base64
-from labeler.llm import ServerPool, create_client, label_photo, label_video
+from labeler.llm import (
+    ServerPool,
+    create_client,
+    label_photo,
+    label_video,
+    video_settings_tag,
+)
 from labeler.shutdown import is_shutting_down
 from labeler.shutdown import wait as shutdown_wait
 from labeler.writer import write_metadata
@@ -215,6 +221,7 @@ def _process_single_video(
     item: osxphotos.PhotoInfo,
     server,
     video_frames: int,
+    video_frame_batch: int,
     max_dimension: int,
     write: bool,
 ) -> None:
@@ -237,12 +244,22 @@ def _process_single_video(
     )
     t_llm = time.monotonic()
     labels, llm_retries, in_toks, out_toks = label_video(
-        client, server.model, frames_b64, item.original_filename
+        client,
+        server.model,
+        frames_b64,
+        item.original_filename,
+        batch_size=video_frame_batch,
     )
     llm_duration = time.monotonic() - t_llm
 
     t_write = time.monotonic()
-    write_metadata(item.uuid, labels, model=server.model, write=write)
+    write_metadata(
+        item.uuid,
+        labels,
+        model=server.model,
+        write=write,
+        video_tag=video_settings_tag(video_frames, video_frame_batch),
+    )
     write_duration = time.monotonic() - t_write
 
     metrics.record_item(
@@ -270,7 +287,13 @@ def _process_single_video(
 
 
 def _process_video_with_retry(
-    item, pool: ServerPool, video_frames, max_dimension, write, tracker
+    item,
+    pool: ServerPool,
+    video_frames,
+    video_frame_batch,
+    max_dimension,
+    write,
+    tracker,
 ):
     attempt = 0
     last_model: str | None = None
@@ -285,6 +308,7 @@ def _process_video_with_retry(
                 item,
                 server,
                 video_frames,
+                video_frame_batch,
                 max_dimension,
                 write,
             )
@@ -541,6 +565,7 @@ def _process_videos_sequential(
     state,
     server_pool: ServerPool,
     video_frames,
+    video_frame_batch,
     max_dimension,
     write,
     tracker,
@@ -567,6 +592,7 @@ def _process_videos_sequential(
                 video,
                 server_pool,
                 video_frames,
+                video_frame_batch,
                 max_dimension,
                 write,
                 tracker,
@@ -594,6 +620,7 @@ def process_batch(
     items: list[osxphotos.PhotoInfo],
     server_pool: ServerPool,
     video_frames: int,
+    video_frame_batch: int = 5,
     max_dimension: int = 1024,
     write: bool = True,
     discover_fn=None,
@@ -655,6 +682,7 @@ def process_batch(
             state,
             server_pool,
             video_frames,
+            video_frame_batch,
             max_dimension,
             write,
             tracker,

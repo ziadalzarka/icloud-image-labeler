@@ -25,5 +25,7 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
 - `use_photos_export=True` always (not just for missing/iCloud-only files)
 - PhotoScript writes must be serialized (AppleScript is single-threaded) — `_write_lock` in `writer.py`
 - Photos processed in parallel, videos sequentially (separate phases in `processor.py`)
+- Video frames are labeled `video_frame_batch` at a time, then a text-only request merges the batch labels (`label_video` in `llm.py`)
+- Videos get a `v:<hash>` keyword of `video_frames`/`video_frame_batch` next to the `m:` model tag; `--reindex` picks up videos missing the current one
 - Qwen models return `<think>` blocks — stripped before JSON parsing in `llm.py`
 - Images resized to `max_dimension` before sending to LLM to avoid context window exhaustion

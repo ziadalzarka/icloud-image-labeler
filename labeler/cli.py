@@ -11,7 +11,7 @@ from labeler import config, daemon, metrics
 from labeler.checks import check_dependencies
 from labeler.discovery import get_unprocessed_media
 from labeler.init import run_init
-from labeler.llm import Server, ServerPool
+from labeler.llm import Server, ServerPool, video_settings_tag
 from labeler.processor import process_batch
 from labeler.shutdown import install_handlers as install_signal_handlers
 from labeler.shutdown import is_shutting_down
@@ -95,6 +95,11 @@ def _resolve_config(args, cfg):
         "video_frames": (
             args.video_frames if args.video_frames is not None else cfg["video_frames"]
         ),
+        "video_frame_batch": (
+            args.video_frame_batch
+            if args.video_frame_batch is not None
+            else cfg["video_frame_batch"]
+        ),
         "photo": args.photo if args.photo is not None else cfg["photo"],
         "video": args.video if args.video is not None else cfg["video"],
     }
@@ -123,8 +128,16 @@ def _run(args, cfg):
     for s in pool.servers():
         logger.info(f"Server: {s.base_url} ({s.model}, threads={s.threads})")
     expected_tags = pool.model_tags() if rc["reindex"] else None
+    expected_video_tag = (
+        video_settings_tag(rc["video_frames"], rc["video_frame_batch"])
+        if rc["reindex"]
+        else None
+    )
     if rc["reindex"]:
-        logger.info(f"Reindex mode: accepting model tags {sorted(expected_tags)}")
+        logger.info(
+            f"Reindex mode: accepting model tags {sorted(expected_tags)}, "
+            f"video tag {expected_video_tag}"
+        )
 
     def discover():
         return get_unprocessed_media(
@@ -135,6 +148,7 @@ def _run(args, cfg):
             video=rc["video"],
             reindex=rc["reindex"],
             expected_model_tags=expected_tags,
+            expected_video_tag=expected_video_tag,
         )
 
     try:
@@ -169,6 +183,7 @@ def _process_one_cycle(args, rc, pool, discover) -> bool:
             items,
             server_pool=pool,
             video_frames=rc["video_frames"],
+            video_frame_batch=rc["video_frame_batch"],
             max_dimension=rc["max_dimension"],
             write=rc["write"],
             discover_fn=discover,
@@ -311,6 +326,12 @@ def _build_run_parser(subparsers):
     )
     run_parser.add_argument("--threads", type=int, default=None)
     run_parser.add_argument("--video-frames", type=int, default=None)
+    run_parser.add_argument(
+        "--video-frame-batch",
+        type=int,
+        default=None,
+        help="Video frames per LLM request (0 = all frames in one request)",
+    )
     run_parser.add_argument(
         "--uuid", nargs="+", default=None, help="Process specific photo UUIDs"
     )

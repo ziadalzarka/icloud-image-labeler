@@ -20,6 +20,7 @@ def get_unprocessed_media(
     video: bool = True,
     reindex: bool = False,
     expected_model_tags: set[str] | None = None,
+    expected_video_tag: str | None = None,
 ) -> list[osxphotos.PhotoInfo]:
     """Query Photos library for unprocessed media.
 
@@ -28,7 +29,8 @@ def get_unprocessed_media(
         days_back: Look back N days from now. 0 = no date filter (all photos).
         to_days: Skip the most recent N days (e.g. 7 = exclude last 7 days).
         reindex: If True, include items whose model tag matches none of
-            ``expected_model_tags`` (stale or never processed).
+            ``expected_model_tags`` (stale or never processed), and videos
+            missing ``expected_video_tag``.
         expected_model_tags: Set of valid model tags (``m:<hash>``). An item
             is considered up-to-date if any of its keywords appears here.
     """
@@ -63,9 +65,13 @@ def get_unprocessed_media(
             if p.hidden or p.uuid in skip_uuids:
                 return False
             keywords = set(p.keywords or ())
-            if keywords & tags:
-                return False
-            return True
+            if not keywords & tags:
+                return True
+            return (
+                not p.isphoto
+                and expected_video_tag is not None
+                and expected_video_tag not in keywords
+            )
 
         items = [p for p in recent if _needs_reindex(p)]
     else:

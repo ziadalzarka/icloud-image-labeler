@@ -17,6 +17,7 @@ FFMPEG_QUALITY = "2"  # -q:v value for ffmpeg frame extraction
 # Below this duration the clip is essentially a single frame; evenly-spaced
 # seek timestamps cluster too close to t=0 to land on a decodable keyframe.
 SHORT_VIDEO_THRESHOLD_S = 0.5
+MIN_FRAME_SPACING_S = 0.5
 
 
 def _resize_if_needed(img, max_dim: int):
@@ -293,7 +294,13 @@ def _extract_all_frames(video_path, num_frames, duration, max_dimension, tmpdir)
     if duration < SHORT_VIDEO_THRESHOLD_S:
         timestamps = [0.0]
     else:
-        timestamps = [duration * (i + 0.5) / num_frames for i in range(num_frames)]
+        count = min(num_frames, int(duration / MIN_FRAME_SPACING_S))
+        if count < num_frames:
+            logger.debug(
+                f"Capping to {count} frames for {duration:.1f}s video "
+                f"(min spacing {MIN_FRAME_SPACING_S}s)"
+            )
+        timestamps = [duration * (i + 0.5) / count for i in range(count)]
 
     def _try_capture(ts, idx):
         nonlocal total_frame_bytes, frame_width, frame_height
@@ -335,7 +342,7 @@ def _extract_all_frames(video_path, num_frames, duration, max_dimension, tmpdir)
 
 
 def export_video_frames_as_base64(
-    photo: osxphotos.PhotoInfo, num_frames: int = 5, max_dimension: int = 1024
+    photo: osxphotos.PhotoInfo, num_frames: int = 30, max_dimension: int = 1024
 ) -> tuple[list[str], dict]:
     """Export video, extract frames at equal intervals.
 

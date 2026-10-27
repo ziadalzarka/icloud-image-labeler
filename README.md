@@ -12,8 +12,8 @@ Photos.app ──> Discovery ──> Export ──> LLM ──> Writer ──> P
 ```
 
 1. **Discovery** — Queries the Photos library for media with no keywords set, filtered by date range and media type.
-2. **Export** — Exports photos as JPEG (with HEIC/iCloud fallbacks), extracts frames from videos via ffmpeg.
-3. **LLM** — Sends images to an OpenAI-compatible API. Returns structured JSON with keywords, title, description, and OCR text.
+2. **Export** — Exports photos as JPEG (with HEIC/iCloud fallbacks), extracts frames from videos via ffmpeg (evenly spaced, at most 2 per second).
+3. **LLM** — Sends images to an OpenAI-compatible API. Returns structured JSON with keywords, title, description, and OCR text. Video frames are sent in batches, and a final text-only request merges the batch results into one set of labels.
 4. **Writer** — Writes metadata back into Photos.app via PhotoScript (AppleScript automation).
 
 Photos are processed in parallel (configurable thread count), videos sequentially.
@@ -90,8 +90,10 @@ icloud-image-labeler run -v
 | `--model NAME` | Model identifier |
 | `--threads N` | Parallel photo threads |
 | `--video-frames N` | Frames to extract per video |
+| `--video-frame-batch N` | Video frames per LLM request (0 = all in one) |
 | `--uuid UUID [...]` | Process specific photo UUIDs |
 | `--loop` | Run continuously with poll interval |
+| `--reindex` | Reprocess items labeled by a different model, and videos labeled with different frame settings |
 | `-v, --verbose` | Debug logging |
 
 ## Configuration
@@ -116,7 +118,8 @@ If no config exists when you run `icloud-image-labeler run`, the setup wizard la
 | `to_days` | `0` | Skip most recent N days |
 | `limit_per_cycle` | `0` | Items per cycle (0 = all) |
 | `threads` | `4` | Max parallel photo threads |
-| `video_frames` | `5` | Frames to extract from videos |
+| `video_frames` | `30` | Frames to extract from videos |
+| `video_frame_batch` | `5` | Video frames per LLM request (0 = all in one) |
 | `max_dimension` | `1024` | Max image dimension sent to LLM (px) |
 | `photo` | `true` | Include photos in processing |
 | `video` | `true` | Include videos in processing |

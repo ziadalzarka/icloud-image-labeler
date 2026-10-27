@@ -26,7 +26,13 @@ def _ensure_photos_app():
         time.sleep(PHOTOS_APP_STARTUP_WAIT)
 
 
-def write_metadata(photo_uuid: str, labels: dict, model: str, write: bool = True):
+def write_metadata(
+    photo_uuid: str,
+    labels: dict,
+    model: str,
+    write: bool = True,
+    video_tag: str | None = None,
+):
     """Write keywords, title, and description to Photos.app."""
     tag = model_tag(model)
     if not write:
@@ -37,6 +43,8 @@ def write_metadata(photo_uuid: str, labels: dict, model: str, write: bool = True
         if labels.get("ocr_text"):
             logger.info(f"  OCR Text: {labels['ocr_text']}")
         logger.info(f"  Model tag: {tag}")
+        if video_tag:
+            logger.info(f"  Video tag: {video_tag}")
         return
 
     _ensure_photos_app()
@@ -45,6 +53,8 @@ def write_metadata(photo_uuid: str, labels: dict, model: str, write: bool = True
     if labels.get("ocr_text"):
         keywords.append(f"ocr:{labels['ocr_text']}")
     keywords.append(tag)
+    if video_tag:
+        keywords.append(video_tag)
 
     with _write_lock:
         logger.debug("Writing metadata to Photos.app...")

@@ -13,6 +13,7 @@ from openai import OpenAI
 logger = logging.getLogger(__name__)
 
 LLM_TIMEOUT = 90.0  # seconds
+LLM_MERGE_TIMEOUT = 300.0  # seconds
 LLM_TEMPERATURE = 0.3
 
 PHOTO_SYSTEM_PROMPT = """\
@@ -49,6 +50,28 @@ Respond ONLY with valid JSON in this exact format:
   "ocr_text": "any visible text"
 }"""
 
+VIDEO_MERGE_SYSTEM_PROMPT = """\
+You are a video labeling assistant. A video was split into consecutive \
+segments and each segment was labeled separately from its frames. You will \
+be given those segment labels in order. Combine them into one set of labels \
+for the whole video:
+1. **keywords**: A list of descriptive keywords/tags covering the whole video
+   (objects, scenes, activities, colors, mood, actions). Keep the most
+   relevant ones and drop duplicates and near-duplicates. 10-20 keywords.
+2. **title**: A short descriptive title (5-10 words) for the whole video.
+3. **description**: A one-sentence description of what happens across the
+   whole video.
+4. **ocr_text**: All distinct visible text from the segments, without repeats
+   (empty string if none).
+
+Respond ONLY with valid JSON in this exact format:
+{
+  "keywords": ["keyword1", "keyword2", ...],
+  "title": "Short descriptive title",
+  "description": "One sentence describing the video.",
+  "ocr_text": "any visible text"
+}"""
+
 
 def model_tag(model: str) -> str:
     """Opaque keyword identifying the model that processed a photo.
@@ -57,6 +80,11 @@ def model_tag(model: str) -> str:
     but still lets discovery detect model changes for reindexing.
     """
     return f"m:{hashlib.sha256(model.encode()).hexdigest()[:8]}"
+
+
+def video_settings_tag(video_frames: int, video_frame_batch: int) -> str:
+    settings = f"frames={video_frames},batch={video_frame_batch}"
+    return f"v:{hashlib.sha256(settings.encode()).hexdigest()[:8]}"
 
 
 def create_client(base_url: str, api_key: str = "") -> OpenAI:
@@ -172,7 +200,7 @@ def _usage_tokens(response) -> tuple[int, int]:
 
 
 def _request_labels(
-    client: OpenAI, model: str, messages: list
+    client: OpenAI, model: str, messages: list, timeout: float = LLM_TIMEOUT
 ) -> tuple[dict, int, int, int]:
     """Send request to LLM and parse response, with one retry on JSON failure.
 
@@ -184,6 +212,7 @@ def _request_labels(
         model=model,
         messages=messages,
         temperature=LLM_TEMPERATURE,
+        timeout=timeout,
     )
     raw = response.choices[0].message.content.strip()
     in_toks, out_toks = _usage_tokens(response)
@@ -201,6 +230,7 @@ def _request_labels(
             model=model,
             messages=messages,
             temperature=LLM_TEMPERATURE,
+            timeout=timeout,
         )
         raw = response.choices[0].message.content.strip()
         retry_in, retry_out = _usage_tokens(response)
@@ -235,24 +265,8 @@ def label_photo(
     return labels, retries, in_toks, out_toks
 
 
-def label_video(
-    client: OpenAI, model: str, frames_b64: list[str], filename: str
-) -> tuple[dict, int, int, int]:
-    """Send video frames to the LLM for labeling.
-
-    Returns (labels, retries, input_tokens, output_tokens).
-    """
-    logger.debug(f"Labeling video: {filename} ({len(frames_b64)} frames)")
-    image_content = [
-        {
-            "type": "text",
-            "text": (
-                f"These are {len(frames_b64)} frames extracted"
-                f" at equal intervals from a video."
-                f" Label this video:"
-            ),
-        }
-    ]
+def _video_messages(frames_b64: list[str], text: str) -> list[dict]:
+    image_content = [{"type": "text", "text": text}]
     for frame_b64 in frames_b64:
         image_content.append(
             {
@@ -260,11 +274,77 @@ def label_video(
                 "image_url": {"url": f"data:image/jpeg;base64,{frame_b64}"},
             }
         )
-
-    messages = [
+    return [
         {"role": "system", "content": VIDEO_SYSTEM_PROMPT},
         {"role": "user", "content": image_content},
     ]
-    labels, retries, in_toks, out_toks = _request_labels(client, model, messages)
+
+
+def _merge_messages(segment_labels: list[dict]) -> list[dict]:
+    segments = "\n".join(
+        f"Segment {i}: {json.dumps(labels, ensure_ascii=False)}"
+        for i, labels in enumerate(segment_labels, start=1)
+    )
+    return [
+        {"role": "system", "content": VIDEO_MERGE_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"Labels for {len(segment_labels)} consecutive segments"
+                f" of one video, in order:\n{segments}"
+            ),
+        },
+    ]
+
+
+def label_video(
+    client: OpenAI,
+    model: str,
+    frames_b64: list[str],
+    filename: str,
+    batch_size: int = 0,
+) -> tuple[dict, int, int, int]:
+    """Send video frames to the LLM for labeling.
+
+    Returns (labels, retries, input_tokens, output_tokens).
+    """
+    total = len(frames_b64)
+    size = batch_size if batch_size > 0 else total
+    logger.debug(f"Labeling video: {filename} ({total} frames, batch size {size})")
+
+    segment_labels = []
+    retries = in_toks = out_toks = 0
+    for start in range(0, total, size):
+        batch = frames_b64[start : start + size]
+        if len(batch) == total:
+            text = (
+                f"These are {total} frames extracted"
+                f" at equal intervals from a video."
+                f" Label this video:"
+            )
+        else:
+            end = start + len(batch)
+            logger.debug(f"Labeling frames {start + 1}-{end} of {total}...")
+            text = (
+                f"These are frames {start + 1}-{end} of {total},"
+                f" extracted at equal intervals from a video."
+                f" Label this part of the video:"
+            )
+        labels, r, i, o = _request_labels(client, model, _video_messages(batch, text))
+        segment_labels.append(labels)
+        retries, in_toks, out_toks = retries + r, in_toks + i, out_toks + o
+
+    if len(segment_labels) == 1:
+        labels = segment_labels[0]
+    else:
+        logger.debug(f"Merging labels from {len(segment_labels)} batches...")
+        labels, r, i, o = _request_labels(
+            client,
+            model,
+            _merge_messages(segment_labels),
+            timeout=LLM_MERGE_TIMEOUT,
+        )
+        retries, in_toks, out_toks = retries + r, in_toks + i, out_toks + o
+
     logger.debug(f"Parsed: {len(labels.get('keywords', []))} keywords")
     return labels, retries, in_toks, out_toks
