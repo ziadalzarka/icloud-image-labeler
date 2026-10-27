@@ -37,7 +37,7 @@ Videos with any `trans:` keyword are not transcribed again. Whisper sometimes in
 
 ### Keywords
 
-Besides the descriptive keywords, the tool adds:
+All keywords the tool writes are lowercase, including `ocr:` and `trans:` text. Besides the descriptive keywords, the tool adds:
 
 | Keyword | Meaning |
 |---------|---------|
@@ -182,6 +182,17 @@ If no config exists when you run `icloud-image-labeler run`, the setup wizard la
 | `write` | `true` | Write metadata to Photos.app |
 | `poll_interval` | `300` | Seconds between cycles in loop/daemon mode |
 
+## Migrations
+
+Libraries labeled by versions before keywords were lowercased can be converted with:
+
+```sh
+icloud-image-labeler migrate lowercase-keywords --dry-run   # Show what would change
+icloud-image-labeler migrate lowercase-keywords             # Lowercase every keyword in the library
+```
+
+The migration only touches items that still have an uppercase keyword, so it can be stopped and run again. Before changing an item, it saves the item's original keywords to `~/.image-labeler/backups/keywords-<time>.jsonl`.
+
 ## Daemon
 
 Run as a background service that auto-starts on login via macOS Launch Agent:
@@ -221,6 +232,7 @@ labeler/
   llm.py        — OpenAI-compatible client, JSON parsing, retry logic
   processor.py  — batch orchestration, parallel photos + sequential videos
   transcriber.py — optional Whisper transcription of videos, in its own thread
+  migrate.py    — one-off keyword migrations (lowercase-keywords)
   writer.py     — PhotoScript metadata writes (thread-safe)
   metrics.py    — SQLite metrics recording
   daemon.py     — macOS Launch Agent lifecycle

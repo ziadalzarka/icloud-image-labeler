@@ -7,7 +7,7 @@ import logging
 import sys
 from importlib.metadata import version
 
-from labeler import config, daemon, metrics
+from labeler import config, daemon, metrics, migrate
 from labeler.checks import check_dependencies
 from labeler.discovery import (
     get_unprocessed_media,
@@ -303,6 +303,16 @@ def _daemon_cmd(args):
         sys.exit(1)
 
 
+def _migrate_cmd(args):
+    install_signal_handlers()
+    try:
+        migrate.lowercase_library_keywords(
+            write=not args.dry_run, limit=args.limit or 0
+        )
+    except KeyboardInterrupt:
+        logger.info("Interrupted, exiting.")
+
+
 def _pricing_cmd(args):
     action = args.pricing_action
 
@@ -469,6 +479,13 @@ def _build_parser():
     )
     metrics_parser.add_argument("--port", type=int, default=None)
 
+    migrate_parser = subparsers.add_parser(
+        "migrate", help="Update keywords already in the Photos library"
+    )
+    migrate_parser.add_argument("migration", choices=["lowercase-keywords"])
+    migrate_parser.add_argument("--dry-run", action="store_true", default=False)
+    migrate_parser.add_argument("--limit", type=int, default=None)
+
     pricing_parser = subparsers.add_parser(
         "pricing", help="Manage per-model token pricing for cost dashboards"
     )
@@ -516,5 +533,7 @@ def main():
         _config_cmd(args, cfg)
     elif args.command == "metrics":
         _metrics_cmd(args)
+    elif args.command == "migrate":
+        _migrate_cmd(args)
     elif args.command == "pricing":
         _pricing_cmd(args)

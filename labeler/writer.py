@@ -34,6 +34,10 @@ def _transcript_keywords(keywords: list[str]) -> list[str]:
     return [k for k in keywords if k.startswith(TRANSCRIPT_TAG_PREFIX)]
 
 
+def lowercase_keywords(keywords: list[str]) -> list[str]:
+    return list(dict.fromkeys(k.lower() for k in keywords))
+
+
 def write_metadata(
     photo_uuid: str,
     labels: dict,
@@ -47,9 +51,10 @@ def write_metadata(
         logger.info("[DRY RUN] Would write:")
         logger.info(f"  Title: {labels.get('title', '')}")
         logger.info(f"  Description: {labels.get('description', '')}")
-        logger.info(f"  Keywords: {', '.join(labels.get('keywords', []))}")
+        keywords = lowercase_keywords(labels.get("keywords", []))
+        logger.info(f"  Keywords: {', '.join(keywords)}")
         if labels.get("ocr_text"):
-            logger.info(f"  OCR Text: {labels['ocr_text']}")
+            logger.info(f"  OCR Text: {labels['ocr_text'].lower()}")
         logger.info(f"  Model tag: {tag}")
         if video_tag:
             logger.info(f"  Video tag: {video_tag}")
@@ -67,7 +72,9 @@ def write_metadata(
     with _write_lock:
         logger.debug("Writing metadata to Photos.app...")
         photo = photoscript.Photo(photo_uuid)
-        photo.keywords = keywords + _transcript_keywords(photo.keywords)
+        photo.keywords = lowercase_keywords(
+            keywords + _transcript_keywords(photo.keywords)
+        )
         photo.title = labels.get("title", "")
         photo.description = labels.get("description", "")
         logger.info(f"Written {len(keywords)} keywords, title, and description")
@@ -75,7 +82,7 @@ def write_metadata(
 
 def write_transcript(photo_uuid: str, keyword: str, write: bool = True):
     if not write:
-        logger.info(f"[DRY RUN] Would write keyword: {keyword}")
+        logger.info(f"[DRY RUN] Would write keyword: {keyword.lower()}")
         return
 
     _ensure_photos_app()
@@ -83,4 +90,4 @@ def write_transcript(photo_uuid: str, keyword: str, write: bool = True):
     with _write_lock:
         photo = photoscript.Photo(photo_uuid)
         other = [k for k in photo.keywords if not k.startswith(TRANSCRIPT_TAG_PREFIX)]
-        photo.keywords = [*other, keyword]
+        photo.keywords = lowercase_keywords([*other, keyword])
