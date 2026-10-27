@@ -625,7 +625,7 @@ def process_batch(
     write: bool = True,
     discover_fn=None,
     refresh_interval: int = DEFAULT_REFRESH_INTERVAL,
-):
+) -> int:
     """Process a batch of media: photos in parallel, then videos sequentially.
 
     Photo exports happen on the main thread (osxphotos uses SQLite which is
@@ -697,3 +697,4 @@ def process_batch(
         photos_failed=state.photos_fail,
         videos_failed=state.videos_fail,
     )
+    return state.videos_ok

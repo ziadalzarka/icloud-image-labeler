@@ -21,6 +21,7 @@ logger = logging.getLogger("labeler")
 
 DEFAULT_REFRESH_INTERVAL = 21600  # seconds (6 hours)
 DEFAULT_DATASETTE_PORT = 8001
+OUTDATED_VIDEOS_PER_CYCLE = 20
 
 
 def _setup_logging(verbose: bool = False):
@@ -128,11 +129,7 @@ def _run(args, cfg):
     for s in pool.servers():
         logger.info(f"Server: {s.base_url} ({s.model}, threads={s.threads})")
     expected_tags = pool.model_tags() if rc["reindex"] else None
-    expected_video_tag = (
-        video_settings_tag(rc["video_frames"], rc["video_frame_batch"])
-        if rc["reindex"]
-        else None
-    )
+    expected_video_tag = video_settings_tag(rc["video_frames"], rc["video_frame_batch"])
     if rc["reindex"]:
         logger.info(
             f"Reindex mode: accepting model tags {sorted(expected_tags)}, "
@@ -149,15 +146,22 @@ def _run(args, cfg):
             reindex=rc["reindex"],
             expected_model_tags=expected_tags,
             expected_video_tag=expected_video_tag,
+            outdated_video_limit=OUTDATED_VIDEOS_PER_CYCLE,
         )
 
     try:
         while not is_shutting_down():
-            keep_running = _process_one_cycle(args, rc, pool, discover)
+            keep_running, more_outdated = _process_one_cycle(args, rc, pool, discover)
             gc.collect()
 
             if not keep_running or not rc["loop"] or is_shutting_down():
                 break
+            if more_outdated:
+                logger.info(
+                    "More videos labeled with other frame settings remain; "
+                    "starting the next cycle now"
+                )
+                continue
             logger.info(f"Sleeping {rc['poll_interval']}s until next cycle...")
             if shutdown_wait(rc["poll_interval"]):
                 break
@@ -165,7 +169,7 @@ def _run(args, cfg):
         logger.info("Interrupted, exiting.")
 
 
-def _process_one_cycle(args, rc, pool, discover) -> bool:
+def _process_one_cycle(args, rc, pool, discover) -> tuple[bool, bool]:
     if args.uuid:
         import osxphotos
 
@@ -173,26 +177,27 @@ def _process_one_cycle(args, rc, pool, discover) -> bool:
         items = [p for u in args.uuid for p in photosdb.photos(uuid=[u])]
         if not items:
             logger.error(f"No photos found for UUIDs: {args.uuid}")
-            return False
+            return False, False
         logger.info(f"Processing {len(items)} item(s) by UUID")
     else:
         items = discover()
 
-    if items:
-        process_batch(
-            items,
-            server_pool=pool,
-            video_frames=rc["video_frames"],
-            video_frame_batch=rc["video_frame_batch"],
-            max_dimension=rc["max_dimension"],
-            write=rc["write"],
-            discover_fn=discover,
-            refresh_interval=DEFAULT_REFRESH_INTERVAL,
-        )
-    else:
+    if not items:
         logger.info("No unprocessed media found.")
+        return True, False
 
-    return True
+    videos_ok = process_batch(
+        items,
+        server_pool=pool,
+        video_frames=rc["video_frames"],
+        video_frame_batch=rc["video_frame_batch"],
+        max_dimension=rc["max_dimension"],
+        write=rc["write"],
+        discover_fn=discover,
+        refresh_interval=DEFAULT_REFRESH_INTERVAL,
+    )
+    outdated = sum(1 for p in items if not p.isphoto and p.keywords)
+    return True, outdated >= OUTDATED_VIDEOS_PER_CYCLE and videos_ok > 0
 
 
 def _config_cmd(args, cfg):

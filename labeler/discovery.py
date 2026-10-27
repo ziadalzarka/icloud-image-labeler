@@ -12,6 +12,56 @@ logger = logging.getLogger(__name__)
 _MODEL_TAG_PREFIX = "m:"
 
 
+def _needs_reindex(
+    p: osxphotos.PhotoInfo, model_tags: set[str], expected_video_tag: str | None
+) -> bool:
+    keywords = set(p.keywords or ())
+    if not keywords & model_tags:
+        return True
+    return (
+        not p.isphoto
+        and expected_video_tag is not None
+        and expected_video_tag not in keywords
+    )
+
+
+def _is_outdated_video(p: osxphotos.PhotoInfo, expected_video_tag: str) -> bool:
+    keywords = p.keywords or ()
+    return (
+        not p.isphoto
+        and expected_video_tag not in keywords
+        and any(k.startswith(_MODEL_TAG_PREFIX) for k in keywords)
+    )
+
+
+def _outdated_videos(
+    recent: list[osxphotos.PhotoInfo],
+    skip_uuids: set[str],
+    expected_video_tag: str | None,
+    limit: int,
+) -> list[osxphotos.PhotoInfo]:
+    if expected_video_tag is None:
+        return []
+    outdated = sorted(
+        (
+            p
+            for p in recent
+            if not p.hidden
+            and p.uuid not in skip_uuids
+            and _is_outdated_video(p, expected_video_tag)
+        ),
+        key=lambda p: p.date_added or p.date,
+        reverse=True,
+    )
+    taken = outdated[:limit] if limit > 0 else outdated
+    if outdated:
+        logger.info(
+            f"Found {len(outdated)} videos labeled with other frame settings; "
+            f"relabeling {len(taken)} this cycle"
+        )
+    return taken
+
+
 def get_unprocessed_media(
     limit: int = 0,
     days_back: int = 0,
@@ -21,6 +71,7 @@ def get_unprocessed_media(
     reindex: bool = False,
     expected_model_tags: set[str] | None = None,
     expected_video_tag: str | None = None,
+    outdated_video_limit: int = 0,
 ) -> list[osxphotos.PhotoInfo]:
     """Query Photos library for unprocessed media.
 
@@ -59,21 +110,14 @@ def get_unprocessed_media(
 
     if reindex:
         tags = expected_model_tags or set()
-
         # Include items whose model tag is missing or not in the pool's tag set.
-        def _needs_reindex(p: osxphotos.PhotoInfo) -> bool:
-            if p.hidden or p.uuid in skip_uuids:
-                return False
-            keywords = set(p.keywords or ())
-            if not keywords & tags:
-                return True
-            return (
-                not p.isphoto
-                and expected_video_tag is not None
-                and expected_video_tag not in keywords
-            )
-
-        items = [p for p in recent if _needs_reindex(p)]
+        items = [
+            p
+            for p in recent
+            if not p.hidden
+            and p.uuid not in skip_uuids
+            and _needs_reindex(p, tags, expected_video_tag)
+        ]
     else:
         # Filter: no keywords, not hidden, not a known-permanent failure
         items = [
@@ -81,6 +125,12 @@ def get_unprocessed_media(
             for p in recent
             if not p.keywords and not p.hidden and p.uuid not in skip_uuids
         ]
+        items += _outdated_videos(
+            recent,
+            skip_uuids,
+            expected_video_tag if video else None,
+            outdated_video_limit,
+        )
 
     # Filter by media type
     if photo and not video:
