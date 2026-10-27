@@ -8,12 +8,12 @@ import threading
 import time
 from dataclasses import dataclass
 
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 
 logger = logging.getLogger(__name__)
 
 LLM_TIMEOUT = 90.0  # seconds
-LLM_MERGE_TIMEOUT = 300.0  # seconds
+LLM_MERGE_TIMEOUT = 600.0  # seconds
 LLM_TEMPERATURE = 0.3
 
 PHOTO_SYSTEM_PROMPT = """\
@@ -199,8 +199,40 @@ def _usage_tokens(response) -> tuple[int, int]:
     ) or 0
 
 
+def _create_completion(
+    client: OpenAI,
+    model: str,
+    messages: list,
+    timeout: float,
+    reasoning_effort: str | None,
+):
+    kwargs = {"reasoning_effort": reasoning_effort} if reasoning_effort else {}
+    try:
+        return client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=LLM_TEMPERATURE,
+            timeout=timeout,
+            **kwargs,
+        )
+    except BadRequestError as e:
+        if not kwargs or "reasoning" not in str(e).lower():
+            raise
+        logger.debug(f"Server rejected reasoning_effort, retrying without it: {e}")
+        return client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=LLM_TEMPERATURE,
+            timeout=timeout,
+        )
+
+
 def _request_labels(
-    client: OpenAI, model: str, messages: list, timeout: float = LLM_TIMEOUT
+    client: OpenAI,
+    model: str,
+    messages: list,
+    timeout: float = LLM_TIMEOUT,
+    reasoning_effort: str | None = None,
 ) -> tuple[dict, int, int, int]:
     """Send request to LLM and parse response, with one retry on JSON failure.
 
@@ -208,12 +240,7 @@ def _request_labels(
     counts are summed across the initial call and any retry.
     """
     logger.debug(f"Sending to LM Studio ({model})...")
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=LLM_TEMPERATURE,
-        timeout=timeout,
-    )
+    response = _create_completion(client, model, messages, timeout, reasoning_effort)
     raw = response.choices[0].message.content.strip()
     in_toks, out_toks = _usage_tokens(response)
     logger.debug(f"Received response ({len(raw)} chars)")
@@ -226,11 +253,8 @@ def _request_labels(
         messages.append(
             {"role": "user", "content": "Please respond with valid JSON only."}
         )
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=LLM_TEMPERATURE,
-            timeout=timeout,
+        response = _create_completion(
+            client, model, messages, timeout, reasoning_effort
         )
         raw = response.choices[0].message.content.strip()
         retry_in, retry_out = _usage_tokens(response)
@@ -343,6 +367,7 @@ def label_video(
             model,
             _merge_messages(segment_labels),
             timeout=LLM_MERGE_TIMEOUT,
+            reasoning_effort="none",
         )
         retries, in_toks, out_toks = retries + r, in_toks + i, out_toks + o
 
