@@ -4,6 +4,7 @@ import base64
 import logging
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import osxphotos
@@ -18,6 +19,8 @@ FFMPEG_QUALITY = "2"  # -q:v value for ffmpeg frame extraction
 # seek timestamps cluster too close to t=0 to land on a decodable keyframe.
 SHORT_VIDEO_THRESHOLD_S = 0.5
 MIN_FRAME_SPACING_S = 0.5
+PHOTOS_APP_QUIT_TIMEOUT_S = 20
+PHOTOS_APP_STARTUP_WAIT_S = 10
 
 
 def _resize_if_needed(img, max_dim: int):
@@ -157,6 +160,22 @@ def _has_video_stream(path: str) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+def _photos_app_running() -> bool:
+    result = subprocess.run(["pgrep", "-x", "Photos"], capture_output=True)
+    return result.returncode == 0
+
+
+def _restart_photos_app():
+    subprocess.run(["killall", "Photos"], capture_output=True)
+    deadline = time.monotonic() + PHOTOS_APP_QUIT_TIMEOUT_S
+    while _photos_app_running() and time.monotonic() < deadline:
+        time.sleep(0.5)
+    if _photos_app_running():
+        subprocess.run(["killall", "-9", "Photos"], capture_output=True)
+    subprocess.run(["open", "-a", "Photos"])
+    time.sleep(PHOTOS_APP_STARTUP_WAIT_S)
+
+
 def _resolve_video_path(photo, tmpdir):
     """Export video via Photos; fall back to the on-disk original.
 
@@ -168,6 +187,15 @@ def _resolve_video_path(photo, tmpdir):
     exported = photo.export(
         tmpdir, use_photos_export=True, timeout=VIDEO_EXPORT_TIMEOUT
     )
+    if not exported and photo.ismissing:
+        logger.warning(
+            f"Photos export returned nothing for iCloud-only {photo.uuid}; "
+            f"restarting Photos.app and retrying"
+        )
+        _restart_photos_app()
+        exported = photo.export(
+            tmpdir, use_photos_export=True, timeout=VIDEO_EXPORT_TIMEOUT
+        )
     if exported and _has_video_stream(exported[0]):
         return exported[0]
 
