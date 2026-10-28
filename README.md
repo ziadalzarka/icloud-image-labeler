@@ -33,9 +33,15 @@ Transcription is part of video labeling. Before a video's frame labels are merge
 | `trans:no-speech` | The video has audio, but Whisper found no speech in it |
 | `trans:no-audio` | The video has no audio track |
 
-Videos with any `trans:` keyword are not transcribed again, and relabeling a video reuses its transcript. Whisper sometimes invents text on silent audio (often "Thank you for watching"), so segments that Whisper rates as more likely silence than speech are dropped. A video with only a `trans:` keyword still counts as unlabeled.
+Videos with any `trans:` keyword are not transcribed again, and relabeling a video reuses its transcript. A video with only a `trans:` keyword still counts as unlabeled.
 
-Videos this tool labeled before transcription was turned on are transcribed after the cycle's other videos, up to 100 per cycle; while more remain, the next cycle starts right away. When one has speech, a text-only request updates its title, description and keywords with the transcript, without sending the frames again. Its `m:`, `v:` and `ocr:` keywords stay as they were.
+Whisper often writes text nobody said: on music, noise or silence it produces stock phrases from the videos it was trained on ("thank you for watching", "اشتركوا في القناة"), loops of one phrase, or speech in a language that isn't there. To keep that out of the keywords:
+
+- With `whisper_languages` set, the language is detected for every 30 seconds of audio. Parts where none of the listed languages is likely (usually music or noise) are skipped, and each other part is transcribed in its own language, so a video that switches between Arabic and English keeps both.
+- Segments are dropped when Whisper's own scores say they are unreliable: very low confidence (average log probability below -1.0, the point where Whisper itself gives up), repetition loops (compression ratio above 2.4), or likely silence (no-speech probability above 0.85, or above 0.6 with low confidence).
+- Segments that contain nothing but a known made-up phrase are dropped.
+
+Videos this tool labeled before transcription was turned on are transcribed after the cycle's other videos, up to 500 per cycle; while more remain, the next cycle starts right away. When one has speech, a text-only request updates its title, description and keywords with the transcript, without sending the frames again. Its `m:`, `v:` and `ocr:` keywords stay as they were.
 
 ### Keywords
 
@@ -79,6 +85,14 @@ icloud-image-labeler config set transcribe true
 ```
 
 The default model, `mlx-community/whisper-large-v3-mlx` (about 3 GB), downloads on first use. Any Whisper model in MLX format works; set it with `config set whisper_model <hugging face repo>`.
+
+Whisper guesses each video's language from its first 30 seconds, and it often guesses wrong on dialects, background noise or music. It then writes the speech out in the wrong language, which reads as nonsense. If you know which languages your videos are in, list them, and Whisper picks the most likely one from that list:
+
+```sh
+icloud-image-labeler config set whisper_languages ar,en
+```
+
+Codes are Whisper's two-letter language codes (`ar`, `en`, `fr`, ...). With one language, detection is skipped.
 
 ### iCloud Settings
 
@@ -136,6 +150,7 @@ icloud-image-labeler run -v
 | `--video` / `--no-video` | Include/exclude videos |
 | `--transcribe` / `--no-transcribe` | Transcribe speech in videos and use it in their labels (needs mlx-whisper) |
 | `--whisper-model REPO` | Whisper model for transcription |
+| `--whisper-languages CODES` | Languages speech can be in, e.g. `ar,en` |
 | `--write` | Force write metadata |
 | `--dry-run` | Preview without writing |
 | `--base-url URL` | LLM API endpoint |
@@ -178,6 +193,7 @@ If no config exists when you run `icloud-image-labeler run`, the setup wizard la
 | `video` | `true` | Include videos in processing |
 | `transcribe` | `false` | Transcribe speech in videos and use it in their labels (needs mlx-whisper) |
 | `whisper_model` | `mlx-community/whisper-large-v3-mlx` | Whisper model for transcription |
+| `whisper_languages` | `""` | Comma-separated languages speech can be in, e.g. `ar,en` (empty = any) |
 | `write` | `true` | Write metadata to Photos.app |
 | `poll_interval` | `300` | Seconds between cycles in loop/daemon mode |
 
@@ -191,6 +207,15 @@ icloud-image-labeler migrate normalize-keywords             # Normalize every ke
 ```
 
 This changes every keyword in the library, including ones you added by hand. It only touches items that still need changing, so it can be stopped and run again. Before changing an item, it saves the item's original keywords to `~/.image-labeler/backups/keywords-<time>.jsonl`. It writes to Photos several times a second, so Photos is slow to respond while it runs. `lowercase-keywords` from 0.2.0 still works and does the same thing.
+
+Transcripts made by earlier versions, or before you changed `whisper_languages` or `whisper_model`, can be redone:
+
+```sh
+icloud-image-labeler migrate redo-transcripts --dry-run   # Show what would change
+icloud-image-labeler migrate redo-transcripts             # Remove trans: keywords so videos are transcribed again
+```
+
+This removes every `trans:` keyword except `trans:no-audio`, saving the originals to `~/.image-labeler/backups/transcripts-<time>.jsonl` first. The next runs transcribe those videos again with the current settings and update their labels when there is speech.
 
 ## Daemon
 

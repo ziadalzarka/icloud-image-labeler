@@ -19,7 +19,7 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
   - `llm.py` — OpenAI-compatible LLM client, response parsing, retry
   - `processor.py` — batch orchestration, parallel photos then sequential videos, error tracking
   - `transcriber.py` — optional mlx-whisper transcription of videos, called from video processing
-  - `migrate.py` — `migrate normalize-keywords` command for existing libraries
+  - `migrate.py` — `migrate normalize-keywords` and `migrate redo-transcripts` commands for existing libraries
   - `writer.py` — PhotoScript metadata writes with thread-safe locking
 
 ## Key Constraints
@@ -37,5 +37,6 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
 - Transcription is optional (`transcribe` config, `mlx-whisper` is an optional extra) and part of video labeling: the video is exported once, transcribed, and the transcript goes into the merge request (`label_video`), so labels use what is said. A video with a `trans:` keyword reuses it instead of running Whisper again. Every video gets one of `trans:<text>`, `trans:no-speech` or `trans:no-audio`
 - Labeled videos (`m:` tag) without a `trans:` keyword are found by `get_untranscribed_videos`, up to `UNTRANSCRIBED_VIDEOS_PER_CYCLE` per cycle, and handled after the cycle's other videos: transcribe, then a text-only request (`add_transcript_to_labels`) updates title, description and keywords. Their `m:`/`v:`/`ocr:` keywords are kept (`write_labels_with_transcript`). These rows are recorded in metrics with `media_type='transcript'`
 - Labeling keeps `trans:` keywords when it rewrites keywords, and a video whose only keywords are `trans:` ones still counts as unlabeled (`is_unlabeled` in `discovery.py`)
-- Whisper segments with `no_speech_prob` above 0.5 are dropped; Whisper invents text like "Thank you for watching" on silent audio
+- Whisper invents text on music, noise and silence ("thank you for watching", "اشتركوا في القناة", text in a language nobody spoke). With `whisper_languages` set, the language is detected per 30 s window; windows where the listed languages together score below 0.5 are skipped and each other window is transcribed in its own language (`_window_languages` in `transcriber.py`). Segments are dropped by `_is_speech`: avg_logprob below -1.0, compression_ratio above 2.4, no_speech_prob above 0.85 (or above 0.6 with avg_logprob below -0.5), or only phrases from `MADE_UP_PHRASES`. These thresholds were picked on 75 videos from the library; song lyrics score 0.6-0.8 no_speech_prob and are kept
+- `migrate redo-transcripts` removes `trans:` keywords (keeping `trans:no-audio`) so videos are transcribed again with the current settings
 - Audio is taken from the first audio track (`-map 0:a:0`); newer iPhone videos also carry an `apple_apac` spatial audio track that older ffmpeg builds can't decode

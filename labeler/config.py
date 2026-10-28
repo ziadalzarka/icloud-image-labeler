@@ -23,6 +23,7 @@ DEFAULTS = {
     "video": True,
     "transcribe": False,
     "whisper_model": "mlx-community/whisper-large-v3-mlx",
+    "whisper_languages": "",
     "write": True,
 }
 

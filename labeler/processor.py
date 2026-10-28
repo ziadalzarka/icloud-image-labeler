@@ -28,7 +28,12 @@ from labeler.llm import (
 )
 from labeler.shutdown import is_shutting_down
 from labeler.shutdown import wait as shutdown_wait
-from labeler.transcriber import Transcript, existing_transcript, transcribe_video
+from labeler.transcriber import (
+    Transcript,
+    Whisper,
+    existing_transcript,
+    transcribe_video,
+)
 from labeler.writer import (
     LABEL_TAG_PREFIXES,
     OCR_TAG_PREFIX,
@@ -238,10 +243,10 @@ def _label_photo_with_retry(
 
 
 def _transcribe_or_none(
-    video_path: str, filename: str, whisper_model: str
+    video_path: str, filename: str, whisper: Whisper
 ) -> Transcript | None:
     try:
-        return transcribe_video(video_path, filename, whisper_model)
+        return transcribe_video(video_path, filename, whisper)
     except Exception as e:
         logger.warning(f"Transcription failed, labeling without it: {filename}: {e}")
         return None
@@ -253,7 +258,7 @@ def _process_single_video(
     video_frames: int,
     video_frame_batch: int,
     max_dimension: int,
-    whisper_model: str | None,
+    whisper: Whisper | None,
     write: bool,
 ) -> None:
     """Export frames, transcribe, label, write metadata, record metrics."""
@@ -270,9 +275,9 @@ def _process_single_video(
             max_dimension=max_dimension,
         )
         export_duration = time.monotonic() - t_export
-        if frames_b64 and whisper_model and transcript is None:
+        if frames_b64 and whisper and transcript is None:
             transcript = _transcribe_or_none(
-                video_path, item.original_filename, whisper_model
+                video_path, item.original_filename, whisper
             )
 
     if not frames_b64:
@@ -335,7 +340,7 @@ def _process_video_with_retry(
     video_frames,
     video_frame_batch,
     max_dimension,
-    whisper_model,
+    whisper,
     write,
     tracker,
 ):
@@ -350,7 +355,7 @@ def _process_video_with_retry(
             video_frames=video_frames,
             video_frame_batch=video_frame_batch,
             max_dimension=max_dimension,
-            whisper_model=whisper_model,
+            whisper=whisper,
             write=write,
         ),
     )
@@ -378,12 +383,12 @@ def _current_labels(item: osxphotos.PhotoInfo) -> dict:
 
 
 def _add_transcript(
-    item: osxphotos.PhotoInfo, server, whisper_model: str, write: bool
+    item: osxphotos.PhotoInfo, server, whisper: Whisper, write: bool
 ) -> None:
     t_start = time.monotonic()
     with exported_video(item) as video_path:
         export_duration = time.monotonic() - t_start
-        transcript = transcribe_video(video_path, item.original_filename, whisper_model)
+        transcript = transcribe_video(video_path, item.original_filename, whisper)
     if not transcript.text:
         write_transcript(item.uuid, transcript.keyword, write=write)
         return
@@ -658,7 +663,7 @@ def _process_videos_sequential(
     video_frames,
     video_frame_batch,
     max_dimension,
-    whisper_model,
+    whisper,
     write,
     tracker,
     discover_fn,
@@ -686,7 +691,7 @@ def _process_videos_sequential(
                 video_frames,
                 video_frame_batch,
                 max_dimension,
-                whisper_model,
+                whisper,
                 write,
                 tracker,
             )
@@ -707,7 +712,7 @@ def _process_videos_sequential(
 
 
 def _add_transcripts_sequential(
-    state, server_pool: ServerPool, whisper_model, write, tracker
+    state, server_pool: ServerPool, whisper, write, tracker
 ):
     total = len(state.untranscribed)
     for position, video in enumerate(state.untranscribed, start=1):
@@ -720,9 +725,7 @@ def _add_transcripts_sequential(
                 "transcript",
                 server_pool,
                 tracker,
-                partial(
-                    _add_transcript, video, whisper_model=whisper_model, write=write
-                ),
+                partial(_add_transcript, video, whisper=whisper, write=write),
             )
             state.videos_ok += 1
             logger.info(f"{progress} Done: {video.original_filename}")
@@ -745,12 +748,12 @@ def process_batch(
     write: bool = True,
     discover_fn=None,
     refresh_interval: int = DEFAULT_REFRESH_INTERVAL,
-    whisper_model: str | None = None,
+    whisper: Whisper | None = None,
     untranscribed: list[osxphotos.PhotoInfo] | None = None,
 ) -> int:
     """Process a batch of media: photos in parallel, then videos sequentially.
 
-    With ``whisper_model`` set, videos are transcribed before labeling so the
+    With ``whisper`` set, videos are transcribed before labeling so the
     labels can use what is said. ``untranscribed`` are labeled videos with no
     transcript yet: they are transcribed and their labels updated with the
     transcript in a text-only request, after the other videos.
@@ -811,18 +814,18 @@ def process_batch(
             video_frames,
             video_frame_batch,
             max_dimension,
-            whisper_model,
+            whisper,
             write,
             tracker,
             discover_fn,
             refresh_interval,
         )
 
-    if state.untranscribed and whisper_model and not is_shutting_down():
+    if state.untranscribed and whisper and not is_shutting_down():
         logger.info(
             f"Adding transcripts to {len(state.untranscribed)} labeled videos..."
         )
-        _add_transcripts_sequential(state, server_pool, whisper_model, write, tracker)
+        _add_transcripts_sequential(state, server_pool, whisper, write, tracker)
 
     metrics.finish_run(
         run_id=run_id,

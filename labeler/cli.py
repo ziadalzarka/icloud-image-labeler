@@ -21,7 +21,7 @@ from labeler.processor import process_batch
 from labeler.shutdown import install_handlers as install_signal_handlers
 from labeler.shutdown import is_shutting_down
 from labeler.shutdown import wait as shutdown_wait
-from labeler.transcriber import INSTALL_HINT
+from labeler.transcriber import INSTALL_HINT, Whisper, parse_languages
 from labeler.transcriber import is_available as transcription_available
 
 logger = logging.getLogger("labeler")
@@ -29,7 +29,7 @@ logger = logging.getLogger("labeler")
 DEFAULT_REFRESH_INTERVAL = 21600  # seconds (6 hours)
 DEFAULT_DATASETTE_PORT = 8001
 OUTDATED_VIDEOS_PER_CYCLE = 20
-UNTRANSCRIBED_VIDEOS_PER_CYCLE = 100
+UNTRANSCRIBED_VIDEOS_PER_CYCLE = 500
 PRE_BATCHING_VIDEO_FRAMES = 5
 
 
@@ -121,6 +121,11 @@ def _resolve_config(args, cfg):
             args.transcribe if args.transcribe is not None else cfg["transcribe"]
         ),
         "whisper_model": args.whisper_model or cfg["whisper_model"],
+        "whisper_languages": (
+            args.whisper_languages
+            if args.whisper_languages is not None
+            else cfg["whisper_languages"]
+        ),
     }
 
     resolved["write"] = cfg["write"]
@@ -136,7 +141,7 @@ def _resolve_config(args, cfg):
     return resolved
 
 
-def _whisper_model(rc) -> str | None:
+def _whisper(rc) -> Whisper | None:
     if not rc["transcribe"]:
         return None
     if not rc["video"]:
@@ -148,7 +153,7 @@ def _whisper_model(rc) -> str | None:
             f"Install it with: {INSTALL_HINT}"
         )
         return None
-    return rc["whisper_model"]
+    return Whisper(rc["whisper_model"], parse_languages(rc["whisper_languages"]))
 
 
 def _untranscribed_limit(limit: int) -> int:
@@ -170,9 +175,10 @@ def _run(args, cfg):
     pool = ServerPool(rc["servers"])
     for s in pool.servers():
         logger.info(f"Server: {s.base_url} ({s.model}, threads={s.threads})")
-    whisper_model = _whisper_model(rc)
-    if whisper_model:
-        logger.info(f"Transcription: {whisper_model}")
+    whisper = _whisper(rc)
+    if whisper:
+        languages = ", ".join(whisper.languages) or "any"
+        logger.info(f"Transcription: {whisper.model} (languages: {languages})")
     expected_tags = pool.model_tags() if rc["reindex"] else None
     expected_video_tag = (
         video_settings_tag(rc["video_frames"], rc["video_frame_batch"])
@@ -207,21 +213,21 @@ def _run(args, cfg):
                 exclude_uuids={p.uuid for p in items},
                 limit=_untranscribed_limit(rc["limit"]),
             )
-            if whisper_model
+            if whisper
             else []
         )
         return items, untranscribed
 
     try:
-        _label_loop(args, rc, pool, whisper_model, discover)
+        _label_loop(args, rc, pool, whisper, discover)
     except KeyboardInterrupt:
         logger.info("Interrupted, exiting.")
 
 
-def _label_loop(args, rc, pool, whisper_model, discover):
+def _label_loop(args, rc, pool, whisper, discover):
     while not is_shutting_down():
         keep_running, more_backlog = _process_one_cycle(
-            args, rc, pool, whisper_model, discover
+            args, rc, pool, whisper, discover
         )
         gc.collect()
 
@@ -238,7 +244,7 @@ def _label_loop(args, rc, pool, whisper_model, discover):
             break
 
 
-def _process_one_cycle(args, rc, pool, whisper_model, discover) -> tuple[bool, bool]:
+def _process_one_cycle(args, rc, pool, whisper, discover) -> tuple[bool, bool]:
     if args.uuid:
         photosdb = load_photos_db()
         items = [p for u in args.uuid for p in photosdb.photos(uuid=[u])]
@@ -263,7 +269,7 @@ def _process_one_cycle(args, rc, pool, whisper_model, discover) -> tuple[bool, b
         write=rc["write"],
         discover_fn=lambda: discover()[0],
         refresh_interval=DEFAULT_REFRESH_INTERVAL,
-        whisper_model=whisper_model,
+        whisper=whisper,
         untranscribed=untranscribed,
     )
     outdated = sum(1 for p in items if not p.isphoto and not is_unlabeled(p))
@@ -316,10 +322,13 @@ def _daemon_cmd(args):
 
 def _migrate_cmd(args):
     install_signal_handlers()
+    run_migration = (
+        migrate.remove_transcripts
+        if args.migration == "redo-transcripts"
+        else migrate.normalize_library_keywords
+    )
     try:
-        migrate.normalize_library_keywords(
-            write=not args.dry_run, limit=args.limit or 0
-        )
+        run_migration(write=not args.dry_run, limit=args.limit or 0)
     except KeyboardInterrupt:
         logger.info("Interrupted, exiting.")
 
@@ -412,6 +421,15 @@ def _build_run_parser(subparsers):
         default=None,
         help="Whisper model for transcription (MLX format, e.g. a Hugging Face repo)",
     )
+    run_parser.add_argument(
+        "--whisper-languages",
+        default=None,
+        metavar="CODES",
+        help=(
+            "Comma-separated languages speech can be in, e.g. ar,en"
+            " (empty = any language Whisper knows)"
+        ),
+    )
     run_parser.add_argument("--write", action="store_true", default=None)
     run_parser.add_argument("--dry-run", action="store_true", default=None)
     run_parser.add_argument("--base-url", default=None)
@@ -497,7 +515,8 @@ def _build_parser():
         "migrate", help="Update keywords already in the Photos library"
     )
     migrate_parser.add_argument(
-        "migration", choices=["normalize-keywords", "lowercase-keywords"]
+        "migration",
+        choices=["normalize-keywords", "lowercase-keywords", "redo-transcripts"],
     )
     migrate_parser.add_argument("--dry-run", action="store_true", default=False)
     migrate_parser.add_argument("--limit", type=int, default=None)
