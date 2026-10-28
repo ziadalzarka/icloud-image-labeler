@@ -21,7 +21,7 @@ from labeler.processor import process_batch
 from labeler.shutdown import install_handlers as install_signal_handlers
 from labeler.shutdown import is_shutting_down
 from labeler.shutdown import wait as shutdown_wait
-from labeler.transcriber import INSTALL_HINT, Transcriber
+from labeler.transcriber import INSTALL_HINT
 from labeler.transcriber import is_available as transcription_available
 
 logger = logging.getLogger("labeler")
@@ -29,6 +29,7 @@ logger = logging.getLogger("labeler")
 DEFAULT_REFRESH_INTERVAL = 21600  # seconds (6 hours)
 DEFAULT_DATASETTE_PORT = 8001
 OUTDATED_VIDEOS_PER_CYCLE = 20
+UNTRANSCRIBED_VIDEOS_PER_CYCLE = 100
 PRE_BATCHING_VIDEO_FRAMES = 5
 
 
@@ -135,8 +136,11 @@ def _resolve_config(args, cfg):
     return resolved
 
 
-def _create_transcriber(rc) -> Transcriber | None:
+def _whisper_model(rc) -> str | None:
     if not rc["transcribe"]:
+        return None
+    if not rc["video"]:
+        logger.warning("Transcription runs as part of video labeling, which is off.")
         return None
     if not transcription_available():
         logger.error(
@@ -144,31 +148,32 @@ def _create_transcriber(rc) -> Transcriber | None:
             f"Install it with: {INSTALL_HINT}"
         )
         return None
-    return Transcriber(rc["whisper_model"], write=rc["write"])
+    return rc["whisper_model"]
+
+
+def _untranscribed_limit(limit: int) -> int:
+    if limit > 0:
+        return min(limit, UNTRANSCRIBED_VIDEOS_PER_CYCLE)
+    return UNTRANSCRIBED_VIDEOS_PER_CYCLE
 
 
 def _run(args, cfg):
     """One-shot or loop processing."""
     rc = _resolve_config(args, cfg)
-    transcriber = _create_transcriber(rc)
-    labeling = rc["photo"] or rc["video"]
-    if not labeling and transcriber is None:
-        logger.error(
-            "Nothing to process: photo and video labeling are off "
-            "and transcription isn't running."
-        )
+    if not rc["photo"] and not rc["video"]:
+        logger.error("Nothing to process: photo and video labeling are off.")
         return
-    if labeling and not rc["servers"]:
+    if not rc["servers"]:
         logger.error("No LLM servers configured. Run 'icloud-image-labeler init'.")
         return
 
-    pool = ServerPool(rc["servers"]) if labeling else None
-    if pool:
-        for s in pool.servers():
-            logger.info(f"Server: {s.base_url} ({s.model}, threads={s.threads})")
-    if transcriber:
-        logger.info(f"Transcription: {transcriber.model}")
-    expected_tags = pool.model_tags() if pool and rc["reindex"] else None
+    pool = ServerPool(rc["servers"])
+    for s in pool.servers():
+        logger.info(f"Server: {s.base_url} ({s.model}, threads={s.threads})")
+    whisper_model = _whisper_model(rc)
+    if whisper_model:
+        logger.info(f"Transcription: {whisper_model}")
+    expected_tags = pool.model_tags() if rc["reindex"] else None
     expected_video_tag = (
         video_settings_tag(rc["video_frames"], rc["video_frame_batch"])
         if _video_labeling_changed(rc["video_frames"], rc["video_frame_batch"])
@@ -181,7 +186,9 @@ def _run(args, cfg):
         )
 
     def discover():
-        return get_unprocessed_media(
+        photosdb = load_photos_db()
+        items = get_unprocessed_media(
+            photosdb,
             limit=rc["limit"],
             days_back=rc["days"],
             to_days=rc["to_days"],
@@ -192,39 +199,37 @@ def _run(args, cfg):
             expected_video_tag=expected_video_tag,
             outdated_video_limit=OUTDATED_VIDEOS_PER_CYCLE,
         )
-
-    transcription = None
-    if transcriber:
-        transcription = transcriber.start(
-            lambda: get_untranscribed_videos(
-                limit=rc["limit"],
+        untranscribed = (
+            get_untranscribed_videos(
+                photosdb,
                 days_back=rc["days"],
                 to_days=rc["to_days"],
-                uuids=args.uuid,
-            ),
-            loop=rc["loop"],
-            poll_interval=rc["poll_interval"],
+                exclude_uuids={p.uuid for p in items},
+                limit=_untranscribed_limit(rc["limit"]),
+            )
+            if whisper_model
+            else []
         )
+        return items, untranscribed
 
     try:
-        if pool:
-            _label_loop(args, rc, pool, discover)
-        if transcription:
-            transcription.join()
+        _label_loop(args, rc, pool, whisper_model, discover)
     except KeyboardInterrupt:
         logger.info("Interrupted, exiting.")
 
 
-def _label_loop(args, rc, pool, discover):
+def _label_loop(args, rc, pool, whisper_model, discover):
     while not is_shutting_down():
-        keep_running, more_outdated = _process_one_cycle(args, rc, pool, discover)
+        keep_running, more_backlog = _process_one_cycle(
+            args, rc, pool, whisper_model, discover
+        )
         gc.collect()
 
         if not keep_running or not rc["loop"] or is_shutting_down():
             break
-        if more_outdated:
+        if more_backlog:
             logger.info(
-                "More videos labeled with other frame settings remain; "
+                "More videos to relabel or transcribe remain; "
                 "starting the next cycle now"
             )
             continue
@@ -233,18 +238,19 @@ def _label_loop(args, rc, pool, discover):
             break
 
 
-def _process_one_cycle(args, rc, pool, discover) -> tuple[bool, bool]:
+def _process_one_cycle(args, rc, pool, whisper_model, discover) -> tuple[bool, bool]:
     if args.uuid:
         photosdb = load_photos_db()
         items = [p for u in args.uuid for p in photosdb.photos(uuid=[u])]
+        untranscribed = []
         if not items:
             logger.error(f"No photos found for UUIDs: {args.uuid}")
             return False, False
         logger.info(f"Processing {len(items)} item(s) by UUID")
     else:
-        items = discover()
+        items, untranscribed = discover()
 
-    if not items:
+    if not items and not untranscribed:
         logger.info("No unprocessed media found.")
         return True, False
 
@@ -255,11 +261,17 @@ def _process_one_cycle(args, rc, pool, discover) -> tuple[bool, bool]:
         video_frame_batch=rc["video_frame_batch"],
         max_dimension=rc["max_dimension"],
         write=rc["write"],
-        discover_fn=discover,
+        discover_fn=lambda: discover()[0],
         refresh_interval=DEFAULT_REFRESH_INTERVAL,
+        whisper_model=whisper_model,
+        untranscribed=untranscribed,
     )
     outdated = sum(1 for p in items if not p.isphoto and not is_unlabeled(p))
-    return True, outdated >= OUTDATED_VIDEOS_PER_CYCLE and videos_ok > 0
+    backlog = (
+        outdated >= OUTDATED_VIDEOS_PER_CYCLE
+        or len(untranscribed) >= UNTRANSCRIBED_VIDEOS_PER_CYCLE
+    )
+    return True, backlog and videos_ok > 0
 
 
 def _config_cmd(args, cfg):
@@ -389,7 +401,10 @@ def _build_run_parser(subparsers):
         "--transcribe",
         action="store_true",
         default=None,
-        help="Transcribe speech in videos with Whisper (needs mlx-whisper)",
+        help=(
+            "Transcribe speech in videos with Whisper before labeling them"
+            " (needs mlx-whisper)"
+        ),
     )
     run_parser.add_argument("--no-transcribe", dest="transcribe", action="store_false")
     run_parser.add_argument(

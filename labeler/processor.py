@@ -6,15 +6,21 @@ import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from functools import partial
 from urllib.parse import urlparse
 
 import osxphotos
 from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 from labeler import metrics
-from labeler.exporter import export_photo_as_base64, export_video_frames_as_base64
+from labeler.exporter import (
+    export_photo_as_base64,
+    exported_video,
+    video_frames_as_base64,
+)
 from labeler.llm import (
     ServerPool,
+    add_transcript_to_labels,
     create_client,
     label_photo,
     label_video,
@@ -22,7 +28,15 @@ from labeler.llm import (
 )
 from labeler.shutdown import is_shutting_down
 from labeler.shutdown import wait as shutdown_wait
-from labeler.writer import write_metadata
+from labeler.transcriber import Transcript, existing_transcript, transcribe_video
+from labeler.writer import (
+    LABEL_TAG_PREFIXES,
+    OCR_TAG_PREFIX,
+    TRANSCRIPT_TAG_PREFIX,
+    write_labels_with_transcript,
+    write_metadata,
+    write_transcript,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -166,32 +180,13 @@ def _label_and_write_photo(
     )
 
 
-def _label_photo_with_retry(
-    item,
-    image_b64,
-    export_meta,
-    export_duration,
-    pool: ServerPool,
-    write,
-    tracker,
-):
+def _run_with_retry(item, media_type: str, pool: ServerPool, tracker, work):
     attempt = 0
-    last_model: str | None = None
-    last_server_tag: str | None = None
     while True:
         server = pool.acquire()
-        last_model = server.model
-        last_server_tag = _server_tag(server)
         released = False
         try:
-            _label_and_write_photo(
-                item,
-                image_b64,
-                export_meta,
-                export_duration,
-                server,
-                write,
-            )
+            work(server)
             return
         except Exception as e:
             if _is_retryable_error(e):
@@ -207,14 +202,49 @@ def _label_photo_with_retry(
                     raise
                 continue
             tracker.record_failure(item.uuid, item.original_filename)
-            _record_error(item, "photo", last_model, last_server_tag, e)
+            _record_error(item, media_type, server.model, _server_tag(server), e)
             raise
         finally:
             if not released:
                 pool.release(server)
 
 
+def _label_photo_with_retry(
+    item,
+    image_b64,
+    export_meta,
+    export_duration,
+    pool: ServerPool,
+    write,
+    tracker,
+):
+    _run_with_retry(
+        item,
+        "photo",
+        pool,
+        tracker,
+        partial(
+            _label_and_write_photo,
+            item,
+            image_b64,
+            export_meta,
+            export_duration,
+            write=write,
+        ),
+    )
+
+
 # --- Video processing (fully on main thread) ------------------------------
+
+
+def _transcribe_or_none(
+    video_path: str, filename: str, whisper_model: str
+) -> Transcript | None:
+    try:
+        return transcribe_video(video_path, filename, whisper_model)
+    except Exception as e:
+        logger.warning(f"Transcription failed, labeling without it: {filename}: {e}")
+        return None
 
 
 def _process_single_video(
@@ -223,24 +253,35 @@ def _process_single_video(
     video_frames: int,
     video_frame_batch: int,
     max_dimension: int,
+    whisper_model: str | None,
     write: bool,
 ) -> None:
-    """Export frames, label, write metadata, record metrics for one video."""
+    """Export frames, transcribe, label, write metadata, record metrics."""
     t_start = time.monotonic()
     client = create_client(server.base_url, api_key=server.api_key)
+    transcript = existing_transcript(item)
 
     t_export = time.monotonic()
-    frames_b64, export_meta = export_video_frames_as_base64(
-        item, num_frames=video_frames, max_dimension=max_dimension
-    )
-    export_duration = time.monotonic() - t_export
+    with exported_video(item) as video_path:
+        frames_b64, export_meta = video_frames_as_base64(
+            video_path,
+            item.original_filename,
+            num_frames=video_frames,
+            max_dimension=max_dimension,
+        )
+        export_duration = time.monotonic() - t_export
+        if frames_b64 and whisper_model and transcript is None:
+            transcript = _transcribe_or_none(
+                video_path, item.original_filename, whisper_model
+            )
 
     if not frames_b64:
         raise RuntimeError(f"No frames extracted from {item.original_filename}")
 
     logger.info(
         f"{_server_label(server)} Labeling video: "
-        f"{item.original_filename} ({len(frames_b64)} frames)"
+        f"{item.original_filename} ({len(frames_b64)} frames"
+        f"{', with transcript' if transcript and transcript.text else ''})"
     )
     t_llm = time.monotonic()
     labels, llm_retries, in_toks, out_toks = label_video(
@@ -249,6 +290,7 @@ def _process_single_video(
         frames_b64,
         item.original_filename,
         batch_size=video_frame_batch,
+        transcript=transcript.text if transcript else "",
     )
     llm_duration = time.monotonic() - t_llm
 
@@ -259,6 +301,7 @@ def _process_single_video(
         model=server.model,
         write=write,
         video_tag=video_settings_tag(video_frames, video_frame_batch),
+        transcript_tag=transcript.keyword if transcript else None,
     )
     write_duration = time.monotonic() - t_write
 
@@ -292,46 +335,90 @@ def _process_video_with_retry(
     video_frames,
     video_frame_batch,
     max_dimension,
+    whisper_model,
     write,
     tracker,
 ):
-    attempt = 0
-    last_model: str | None = None
-    last_server_tag: str | None = None
-    while True:
-        server = pool.acquire()
-        last_model = server.model
-        last_server_tag = _server_tag(server)
-        released = False
-        try:
-            _process_single_video(
-                item,
-                server,
-                video_frames,
-                video_frame_batch,
-                max_dimension,
-                write,
-            )
-            return
-        except Exception as e:
-            if _is_retryable_error(e):
-                pool.release(server)
-                released = True
-                delay = _retry_delay(attempt)
-                attempt += 1
-                logger.warning(
-                    f"Retryable error on {server.base_url} "
-                    f"(attempt {attempt}): {e}. Retrying in {delay}s..."
-                )
-                if shutdown_wait(delay):
-                    raise
-                continue
-            tracker.record_failure(item.uuid, item.original_filename)
-            _record_error(item, "video", last_model, last_server_tag, e)
-            raise
-        finally:
-            if not released:
-                pool.release(server)
+    _run_with_retry(
+        item,
+        "video",
+        pool,
+        tracker,
+        partial(
+            _process_single_video,
+            item,
+            video_frames=video_frames,
+            video_frame_batch=video_frame_batch,
+            max_dimension=max_dimension,
+            whisper_model=whisper_model,
+            write=write,
+        ),
+    )
+
+
+# --- Adding transcripts to labeled videos ------------------------------------
+
+
+def _current_labels(item: osxphotos.PhotoInfo) -> dict:
+    keywords = item.keywords or []
+    tag_prefixes = (*LABEL_TAG_PREFIXES, TRANSCRIPT_TAG_PREFIX)
+    return {
+        "keywords": [k for k in keywords if not k.startswith(tag_prefixes)],
+        "title": item.title or "",
+        "description": item.description or "",
+        "ocr_text": next(
+            (
+                k.removeprefix(OCR_TAG_PREFIX)
+                for k in keywords
+                if k.startswith(OCR_TAG_PREFIX)
+            ),
+            "",
+        ),
+    }
+
+
+def _add_transcript(
+    item: osxphotos.PhotoInfo, server, whisper_model: str, write: bool
+) -> None:
+    t_start = time.monotonic()
+    with exported_video(item) as video_path:
+        export_duration = time.monotonic() - t_start
+        transcript = transcribe_video(video_path, item.original_filename, whisper_model)
+    if not transcript.text:
+        write_transcript(item.uuid, transcript.keyword, write=write)
+        return
+
+    logger.info(
+        f"{_server_label(server)} Adding transcript to labels: {item.original_filename}"
+    )
+    client = create_client(server.base_url, api_key=server.api_key)
+    t_llm = time.monotonic()
+    labels, llm_retries, in_toks, out_toks = add_transcript_to_labels(
+        client, server.model, _current_labels(item), transcript.text
+    )
+    llm_duration = time.monotonic() - t_llm
+
+    t_write = time.monotonic()
+    write_labels_with_transcript(item.uuid, labels, transcript.keyword, write=write)
+    write_duration = time.monotonic() - t_write
+
+    metrics.record_item(
+        uuid=item.uuid,
+        filename=item.original_filename,
+        media_type="transcript",
+        is_icloud_only=item.ismissing,
+        status="success",
+        export_duration_s=export_duration,
+        llm_duration_s=llm_duration,
+        write_duration_s=write_duration,
+        total_duration_s=time.monotonic() - t_start,
+        llm_retries=llm_retries,
+        keywords_count=len(labels.get("keywords", [])),
+        model=server.model,
+        server=_server_tag(server),
+        input_tokens=in_toks,
+        output_tokens=out_toks,
+    )
 
 
 # --- Batch state and helpers ------------------------------------------------
@@ -343,6 +430,7 @@ class _BatchState:
 
     photos: list = field(default_factory=list)
     videos: list = field(default_factory=list)
+    untranscribed: list = field(default_factory=list)
     seen_uuids: set = field(default_factory=set)
     total: int = 0
     processed: int = 0
@@ -353,14 +441,17 @@ class _BatchState:
     last_refresh: float = 0.0
 
 
-def _init_batch(items: list[osxphotos.PhotoInfo]) -> _BatchState:
+def _init_batch(
+    items: list[osxphotos.PhotoInfo], untranscribed: list[osxphotos.PhotoInfo]
+) -> _BatchState:
     """Split items into photos/videos and create initial batch state."""
     photos = [p for p in items if p.isphoto]
     videos = [p for p in items if not p.isphoto]
-    seen_uuids = {p.uuid for p in items}
+    seen_uuids = {p.uuid for p in items + untranscribed}
     return _BatchState(
         photos=photos,
         videos=videos,
+        untranscribed=list(untranscribed),
         seen_uuids=seen_uuids,
         total=len(items),
     )
@@ -567,6 +658,7 @@ def _process_videos_sequential(
     video_frames,
     video_frame_batch,
     max_dimension,
+    whisper_model,
     write,
     tracker,
     discover_fn,
@@ -594,6 +686,7 @@ def _process_videos_sequential(
                 video_frames,
                 video_frame_batch,
                 max_dimension,
+                whisper_model,
                 write,
                 tracker,
             )
@@ -613,6 +706,33 @@ def _process_videos_sequential(
             )
 
 
+def _add_transcripts_sequential(
+    state, server_pool: ServerPool, whisper_model, write, tracker
+):
+    total = len(state.untranscribed)
+    for position, video in enumerate(state.untranscribed, start=1):
+        if is_shutting_down():
+            return
+        progress = f"[transcript {position}/{total}]"
+        try:
+            _run_with_retry(
+                video,
+                "transcript",
+                server_pool,
+                tracker,
+                partial(
+                    _add_transcript, video, whisper_model=whisper_model, write=write
+                ),
+            )
+            state.videos_ok += 1
+            logger.info(f"{progress} Done: {video.original_filename}")
+        except MaxFailuresExceeded:
+            raise
+        except Exception as e:
+            state.videos_fail += 1
+            logger.error(f"{progress} Failed: {video.original_filename}: {e}")
+
+
 # --- Batch orchestration ---------------------------------------------------
 
 
@@ -625,8 +745,15 @@ def process_batch(
     write: bool = True,
     discover_fn=None,
     refresh_interval: int = DEFAULT_REFRESH_INTERVAL,
+    whisper_model: str | None = None,
+    untranscribed: list[osxphotos.PhotoInfo] | None = None,
 ) -> int:
     """Process a batch of media: photos in parallel, then videos sequentially.
+
+    With ``whisper_model`` set, videos are transcribed before labeling so the
+    labels can use what is said. ``untranscribed`` are labeled videos with no
+    transcript yet: they are transcribed and their labels updated with the
+    transcript in a text-only request, after the other videos.
 
     Photo exports happen on the main thread (osxphotos uses SQLite which is
     bound to the creating thread), then LLM + write run in worker threads.
@@ -638,7 +765,7 @@ def process_batch(
     server limited to its own ``threads`` slot count. On retry a fresh server
     is selected so a crashed backend rotates away.
     """
-    state = _init_batch(items)
+    state = _init_batch(items, untranscribed or [])
     tracker = ItemFailureTracker()
     total_threads = server_pool.total_threads
 
@@ -650,7 +777,7 @@ def process_batch(
         threads=total_threads,
         dry_run=not write,
         photos_found=len(state.photos),
-        videos_found=len(state.videos),
+        videos_found=len(state.videos) + len(state.untranscribed),
     )
     state.last_refresh = time.monotonic()
 
@@ -684,11 +811,18 @@ def process_batch(
             video_frames,
             video_frame_batch,
             max_dimension,
+            whisper_model,
             write,
             tracker,
             discover_fn,
             refresh_interval,
         )
+
+    if state.untranscribed and whisper_model and not is_shutting_down():
+        logger.info(
+            f"Adding transcripts to {len(state.untranscribed)} labeled videos..."
+        )
+        _add_transcripts_sequential(state, server_pool, whisper_model, write, tracker)
 
     metrics.finish_run(
         run_id=run_id,

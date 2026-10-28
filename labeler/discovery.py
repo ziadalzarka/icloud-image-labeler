@@ -17,8 +17,13 @@ _photosdb_lock = threading.Lock()
 
 
 def load_photos_db() -> osxphotos.PhotosDB:
+    logger.info("Loading Photos library...")
     with _photosdb_lock:
         return osxphotos.PhotosDB()
+
+
+def _has_model_tag(p: osxphotos.PhotoInfo) -> bool:
+    return any(k.startswith(_MODEL_TAG_PREFIX) for k in p.keywords or ())
 
 
 def _has_transcript(p: osxphotos.PhotoInfo) -> bool:
@@ -60,11 +65,7 @@ def _needs_reindex(
 
 def _is_outdated_video(p: osxphotos.PhotoInfo, expected_video_tag: str) -> bool:
     keywords = p.keywords or ()
-    return (
-        not p.isphoto
-        and expected_video_tag not in keywords
-        and any(k.startswith(_MODEL_TAG_PREFIX) for k in keywords)
-    )
+    return not p.isphoto and expected_video_tag not in keywords and _has_model_tag(p)
 
 
 def _outdated_videos(
@@ -96,6 +97,7 @@ def _outdated_videos(
 
 
 def get_unprocessed_media(
+    photosdb: osxphotos.PhotosDB,
     limit: int = 0,
     days_back: int = 0,
     to_days: int = 0,
@@ -120,8 +122,6 @@ def get_unprocessed_media(
     """
     if reindex and not expected_model_tags:
         raise ValueError("reindex=True requires expected_model_tags")
-    logger.info("Loading Photos library...")
-    photosdb = load_photos_db()
 
     from_date, to_date, date_range = _date_range(days_back, to_days)
     logger.debug(f"Querying media ({date_range})...")
@@ -185,26 +185,34 @@ def get_unprocessed_media(
 
 
 def get_untranscribed_videos(
-    limit: int = 0,
+    photosdb: osxphotos.PhotosDB,
     days_back: int = 0,
     to_days: int = 0,
-    uuids: list[str] | None = None,
+    exclude_uuids: set[str] | None = None,
+    limit: int = 0,
 ) -> list[osxphotos.PhotoInfo]:
-    photosdb = load_photos_db()
-    if uuids:
-        return [p for p in photosdb.photos(uuid=uuids) if not p.isphoto]
-
     from_date, to_date, date_range = _date_range(days_back, to_days)
-    logger.debug(f"Querying videos to transcribe ({date_range})...")
+    logger.debug(f"Querying labeled videos without a transcript ({date_range})...")
     videos = photosdb.photos(
         images=False, movies=True, from_date=from_date, to_date=to_date
     )
-    skip_uuids = metrics.get_permanent_failure_uuids()
-    items = [
-        p
-        for p in videos
-        if not p.hidden and p.uuid not in skip_uuids and not _has_transcript(p)
-    ]
-    logger.info(f"Found {len(items)} videos without a transcript")
-    items.sort(key=lambda p: p.date_added or p.date, reverse=True)
-    return items[:limit] if limit > 0 else items
+    skip_uuids = metrics.get_permanent_failure_uuids() | (exclude_uuids or set())
+    items = sorted(
+        (
+            p
+            for p in videos
+            if not p.hidden
+            and p.uuid not in skip_uuids
+            and _has_model_tag(p)
+            and not _has_transcript(p)
+        ),
+        key=lambda p: p.date_added or p.date,
+        reverse=True,
+    )
+    taken = items[:limit] if limit > 0 else items
+    if items:
+        logger.info(
+            f"Found {len(items)} labeled videos without a transcript; "
+            f"transcribing {len(taken)} this cycle"
+        )
+    return taken

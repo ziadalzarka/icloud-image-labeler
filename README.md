@@ -21,11 +21,11 @@ Photos are processed in parallel (configurable thread count), videos sequentiall
 ### Transcription (optional)
 
 ```
-Photos.app ──> Discovery ──> Export ──> ffmpeg ──> Whisper ──> Writer ──> Photos.app
-               (no trans:)   (video)    (audio)    (mlx-whisper)
+Photos.app ──> Export ──> ffmpeg ──> Whisper ──> LLM ──> Writer ──> Photos.app
+               (video)    (audio)    (mlx-whisper)  (labels use what is said)
 ```
 
-Transcription is separate from labeling. It has its own check (videos with no `trans:` keyword) and runs in its own thread, at the same time as labeling, with its own loop in `--loop` mode. Each video gets one keyword:
+Transcription is part of video labeling. Before a video's frame labels are merged, its audio is transcribed with Whisper, and the merge request gets the transcript too, so the title, description and keywords can say what people talk about. The prompt tells the model that the transcript can be wrong and to ignore parts that don't fit the frames. If transcription fails, the video is labeled without it. Each video gets one keyword:
 
 | Keyword | Meaning |
 |---------|---------|
@@ -33,7 +33,9 @@ Transcription is separate from labeling. It has its own check (videos with no `t
 | `trans:no-speech` | The video has audio, but Whisper found no speech in it |
 | `trans:no-audio` | The video has no audio track |
 
-Videos with any `trans:` keyword are not transcribed again. Whisper sometimes invents text on silent audio (often "Thank you for watching"), so segments that Whisper rates as more likely silence than speech are dropped. Labeling keeps `trans:` keywords when it rewrites a video's keywords, and a video with only a `trans:` keyword still counts as unlabeled.
+Videos with any `trans:` keyword are not transcribed again, and relabeling a video reuses its transcript. Whisper sometimes invents text on silent audio (often "Thank you for watching"), so segments that Whisper rates as more likely silence than speech are dropped. A video with only a `trans:` keyword still counts as unlabeled.
+
+Videos this tool labeled before transcription was turned on are transcribed after the cycle's other videos, up to 100 per cycle; while more remain, the next cycle starts right away. When one has speech, a text-only request updates its title, description and keywords with the transcript, without sending the frames again. Its `m:`, `v:` and `ocr:` keywords stay as they were.
 
 ### Keywords
 
@@ -116,11 +118,8 @@ icloud-image-labeler run --loop
 # Use a specific model or API endpoint
 icloud-image-labeler run --base-url http://localhost:1234/v1 --model my-model
 
-# Transcribe speech in videos while labeling
+# Transcribe speech in videos and use it in their labels
 icloud-image-labeler run --transcribe
-
-# Transcribe only, no labeling
-icloud-image-labeler run --no-photo --no-video --transcribe
 
 # Debug logging
 icloud-image-labeler run -v
@@ -135,7 +134,7 @@ icloud-image-labeler run -v
 | `--to-days N` | Skip most recent N days |
 | `--photo` / `--no-photo` | Include/exclude photos |
 | `--video` / `--no-video` | Include/exclude videos |
-| `--transcribe` / `--no-transcribe` | Transcribe speech in videos (needs mlx-whisper) |
+| `--transcribe` / `--no-transcribe` | Transcribe speech in videos and use it in their labels (needs mlx-whisper) |
 | `--whisper-model REPO` | Whisper model for transcription |
 | `--write` | Force write metadata |
 | `--dry-run` | Preview without writing |
@@ -177,7 +176,7 @@ If no config exists when you run `icloud-image-labeler run`, the setup wizard la
 | `max_dimension` | `1024` | Max image dimension sent to LLM (px) |
 | `photo` | `true` | Include photos in processing |
 | `video` | `true` | Include videos in processing |
-| `transcribe` | `false` | Transcribe speech in videos (needs mlx-whisper) |
+| `transcribe` | `false` | Transcribe speech in videos and use it in their labels (needs mlx-whisper) |
 | `whisper_model` | `mlx-community/whisper-large-v3-mlx` | Whisper model for transcription |
 | `write` | `true` | Write metadata to Photos.app |
 | `poll_interval` | `300` | Seconds between cycles in loop/daemon mode |
@@ -231,7 +230,7 @@ labeler/
   exporter.py   — photo export (HEIC/iCloud fallbacks), video frame extraction
   llm.py        — OpenAI-compatible client, JSON parsing, retry logic
   processor.py  — batch orchestration, parallel photos + sequential videos
-  transcriber.py — optional Whisper transcription of videos, in its own thread
+  transcriber.py — optional Whisper transcription of videos, used by video labeling
   migrate.py    — one-off keyword migrations (normalize-keywords)
   writer.py     — PhotoScript metadata writes (thread-safe)
   metrics.py    — SQLite metrics recording

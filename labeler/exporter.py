@@ -5,6 +5,8 @@ import logging
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import osxphotos
@@ -374,19 +376,25 @@ def _extract_all_frames(video_path, num_frames, duration, max_dimension, tmpdir)
     return frames, meta
 
 
-def export_video_frames_as_base64(
-    photo: osxphotos.PhotoInfo, num_frames: int = 30, max_dimension: int = 1024
-) -> tuple[list[str], dict]:
-    """Export video, extract frames at equal intervals.
-
-    Returns (base64_list, metadata_dict).
-    """
+@contextmanager
+def exported_video(photo: osxphotos.PhotoInfo) -> Iterator[str]:
     logger.debug(f"Exporting video (missing={photo.ismissing})...")
     with tempfile.TemporaryDirectory() as tmpdir:
         video_path = _resolve_video_path(photo, tmpdir)
         size_mb = Path(video_path).stat().st_size / (1024 * 1024)
         logger.debug(f"Using {video_path} ({size_mb:.1f} MB)")
-        duration = _get_video_duration(video_path, photo.original_filename)
+        yield video_path
+
+
+def video_frames_as_base64(
+    video_path: str, filename: str, num_frames: int = 30, max_dimension: int = 1024
+) -> tuple[list[str], dict]:
+    """Extract frames at equal intervals.
+
+    Returns (base64_list, metadata_dict).
+    """
+    duration = _get_video_duration(video_path, filename)
+    with tempfile.TemporaryDirectory() as tmpdir:
         return _extract_all_frames(
             video_path, num_frames, duration, max_dimension, tmpdir
         )
@@ -421,10 +429,7 @@ def _decode_audio(video_path, filename) -> bytes:
     return result.stdout
 
 
-def export_video_audio(photo: osxphotos.PhotoInfo) -> bytes | None:
-    logger.debug(f"Exporting video audio (missing={photo.ismissing})...")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        video_path = _resolve_video_path(photo, tmpdir)
-        if not _has_stream(video_path, "a:0"):
-            return None
-        return _decode_audio(video_path, photo.original_filename)
+def video_audio(video_path: str, filename: str) -> bytes | None:
+    if not _has_stream(video_path, "a:0"):
+        return None
+    return _decode_audio(video_path, filename)

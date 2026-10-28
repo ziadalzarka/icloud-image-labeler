@@ -51,18 +51,27 @@ Respond ONLY with valid JSON in this exact format:
 }"""
 
 VIDEO_MERGE_SYSTEM_PROMPT = """\
-You are a video labeling assistant. A video was split into consecutive \
-segments and each segment was labeled separately from its frames. You will \
-be given those segment labels in order. Combine them into one set of labels \
-for the whole video:
+You are a video labeling assistant. You will be given labels made from the \
+frames of one video, either one set for the whole video or one set for each \
+consecutive segment of it, in order. You may also be given a transcript of \
+what is said in the video. Combine them into one set of labels for the whole \
+video:
 1. **keywords**: A list of descriptive keywords/tags covering the whole video
-   (objects, scenes, activities, colors, mood, actions). Keep the most
-   relevant ones and drop duplicates and near-duplicates. 10-20 keywords.
+   (objects, scenes, activities, colors, mood, actions, and the topics, names
+   and places that are clearly said). Keep the most relevant ones and drop
+   duplicates and near-duplicates. 10-20 keywords.
 2. **title**: A short descriptive title (5-10 words) for the whole video.
 3. **description**: A one-sentence description of what happens across the
-   whole video.
-4. **ocr_text**: All distinct visible text from the segments, without repeats
-   (empty string if none).
+   whole video, including what people talk about when the transcript makes
+   it clear.
+4. **ocr_text**: All distinct visible text from the frame labels, without
+   repeats (empty string if none).
+
+The transcript comes from automatic speech recognition and is often wrong: \
+it can be in the wrong language, garbled, repeat itself, or contain phrases \
+that were never said, such as "thank you for watching". Use only the parts \
+that make sense with the frame labels and ignore the rest. Write all labels \
+in English, even when the transcript is in another language.
 
 Respond ONLY with valid JSON in this exact format:
 {
@@ -71,6 +80,8 @@ Respond ONLY with valid JSON in this exact format:
   "description": "One sentence describing the video.",
   "ocr_text": "any visible text"
 }"""
+
+MAX_TRANSCRIPT_CHARS = 3000
 
 
 def model_tag(model: str) -> str:
@@ -304,21 +315,42 @@ def _video_messages(frames_b64: list[str], text: str) -> list[dict]:
     ]
 
 
-def _merge_messages(segment_labels: list[dict]) -> list[dict]:
-    segments = "\n".join(
-        f"Segment {i}: {json.dumps(labels, ensure_ascii=False)}"
-        for i, labels in enumerate(segment_labels, start=1)
-    )
+def _merge_messages(segment_labels: list[dict], transcript: str) -> list[dict]:
+    if len(segment_labels) == 1:
+        content = (
+            "Labels for the whole video:\n"
+            f"{json.dumps(segment_labels[0], ensure_ascii=False)}"
+        )
+    else:
+        segments = "\n".join(
+            f"Segment {i}: {json.dumps(labels, ensure_ascii=False)}"
+            for i, labels in enumerate(segment_labels, start=1)
+        )
+        content = (
+            f"Labels for {len(segment_labels)} consecutive segments"
+            f" of one video, in order:\n{segments}"
+        )
+    if transcript:
+        content += (
+            "\n\nTranscript of what is said in the video:\n"
+            f"{transcript[:MAX_TRANSCRIPT_CHARS]}"
+        )
     return [
         {"role": "system", "content": VIDEO_MERGE_SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                f"Labels for {len(segment_labels)} consecutive segments"
-                f" of one video, in order:\n{segments}"
-            ),
-        },
+        {"role": "user", "content": content},
     ]
+
+
+def _merge_labels(
+    client: OpenAI, model: str, segment_labels: list[dict], transcript: str
+) -> tuple[dict, int, int, int]:
+    return _request_labels(
+        client,
+        model,
+        _merge_messages(segment_labels, transcript),
+        timeout=LLM_MERGE_TIMEOUT,
+        reasoning_effort="none",
+    )
 
 
 def label_video(
@@ -327,6 +359,7 @@ def label_video(
     frames_b64: list[str],
     filename: str,
     batch_size: int = 0,
+    transcript: str = "",
 ) -> tuple[dict, int, int, int]:
     """Send video frames to the LLM for labeling.
 
@@ -358,18 +391,18 @@ def label_video(
         segment_labels.append(labels)
         retries, in_toks, out_toks = retries + r, in_toks + i, out_toks + o
 
-    if len(segment_labels) == 1:
+    if len(segment_labels) == 1 and not transcript:
         labels = segment_labels[0]
     else:
         logger.debug(f"Merging labels from {len(segment_labels)} batches...")
-        labels, r, i, o = _request_labels(
-            client,
-            model,
-            _merge_messages(segment_labels),
-            timeout=LLM_MERGE_TIMEOUT,
-            reasoning_effort="none",
-        )
+        labels, r, i, o = _merge_labels(client, model, segment_labels, transcript)
         retries, in_toks, out_toks = retries + r, in_toks + i, out_toks + o
 
     logger.debug(f"Parsed: {len(labels.get('keywords', []))} keywords")
     return labels, retries, in_toks, out_toks
+
+
+def add_transcript_to_labels(
+    client: OpenAI, model: str, labels: dict, transcript: str
+) -> tuple[dict, int, int, int]:
+    return _merge_labels(client, model, [labels], transcript)

@@ -18,7 +18,7 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
   - `exporter.py` — HEIC-to-JPEG conversion, video frame extraction (ffmpeg)
   - `llm.py` — OpenAI-compatible LLM client, response parsing, retry
   - `processor.py` — batch orchestration, parallel photos then sequential videos, error tracking
-  - `transcriber.py` — optional mlx-whisper transcription of videos, run in its own thread alongside labeling
+  - `transcriber.py` — optional mlx-whisper transcription of videos, called from video processing
   - `migrate.py` — `migrate normalize-keywords` command for existing libraries
   - `writer.py` — PhotoScript metadata writes with thread-safe locking
 
@@ -34,7 +34,8 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
 - Images resized to `max_dimension` before sending to LLM to avoid context window exhaustion
 - All keywords are written lowercase, without commas, and deduplicated (`normalize_keywords` in `writer.py`). Photos' Info window splits keywords at commas when the keyword field is clicked
 - Under Homebrew the daemon plist uses `/opt/homebrew/opt/icloud-image-labeler/...`, not the versioned Cellar path that `brew upgrade` deletes (`_homebrew_opt_path` in `daemon.py`)
-- Transcription is optional (`transcribe` config, `mlx-whisper` is an optional extra) and separate from labeling: its own discovery (videos without a `trans:` keyword), its own thread and loop. Every video gets one of `trans:<text>`, `trans:no-speech` or `trans:no-audio` so it is not transcribed again
+- Transcription is optional (`transcribe` config, `mlx-whisper` is an optional extra) and part of video labeling: the video is exported once, transcribed, and the transcript goes into the merge request (`label_video`), so labels use what is said. A video with a `trans:` keyword reuses it instead of running Whisper again. Every video gets one of `trans:<text>`, `trans:no-speech` or `trans:no-audio`
+- Labeled videos (`m:` tag) without a `trans:` keyword are found by `get_untranscribed_videos`, up to `UNTRANSCRIBED_VIDEOS_PER_CYCLE` per cycle, and handled after the cycle's other videos: transcribe, then a text-only request (`add_transcript_to_labels`) updates title, description and keywords. Their `m:`/`v:`/`ocr:` keywords are kept (`write_labels_with_transcript`). These rows are recorded in metrics with `media_type='transcript'`
 - Labeling keeps `trans:` keywords when it rewrites keywords, and a video whose only keywords are `trans:` ones still counts as unlabeled (`is_unlabeled` in `discovery.py`)
 - Whisper segments with `no_speech_prob` above 0.5 are dropped; Whisper invents text like "Thank you for watching" on silent audio
 - Audio is taken from the first audio track (`-map 0:a:0`); newer iPhone videos also carry an `apple_apac` spatial audio track that older ffmpeg builds can't decode
