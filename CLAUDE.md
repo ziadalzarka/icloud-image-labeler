@@ -29,7 +29,7 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
 - Photos processed in parallel, videos sequentially (separate phases in `processor.py`)
 - Video frames are labeled `video_frame_batch` at a time, then a text-only request merges the batch labels (`label_video` in `llm.py`)
 - Videos get a `v:<hash>` keyword of `video_frames`/`video_frame_batch` next to the `m:` model tag. Normal runs relabel up to `OUTDATED_VIDEOS_PER_CYCLE` videos per cycle that have an `m:` tag but not the current `v:` tag (loop mode skips the sleep while more remain); `--reindex` takes all of them
-- The video merge request sends `reasoning_effort="none"` (thinking made it take 110-300s); servers that reject the parameter get the request again without it
+- The `reasoning_effort` config (per server or global) is sent with every request when set. When it's empty, photo and frame requests send none and the video merge request sends `reasoning_effort="none"` (thinking made it take 110-300s on a local Qwen); servers that reject the parameter get the request again without it
 - Qwen models return `<think>` blocks — stripped before JSON parsing in `llm.py`
 - Images resized to `max_dimension` before sending to LLM to avoid context window exhaustion
 - All keywords are written lowercase, without commas, and deduplicated (`normalize_keywords` in `writer.py`). Photos' Info window splits keywords at commas when the keyword field is clicked

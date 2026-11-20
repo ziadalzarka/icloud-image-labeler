@@ -11,6 +11,7 @@ DEFAULTS = {
     "api_key": "",
     "model": "google/gemma-4-e4b",
     "servers": [],
+    "reasoning_effort": "",
     "poll_interval": 21600,
     "limit_per_cycle": 0,
     "days": 0,

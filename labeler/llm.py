@@ -113,6 +113,7 @@ class Server:
     model: str
     api_key: str = ""
     threads: int = 1
+    reasoning_effort: str = ""
 
 
 _ACQUIRE_POLL = 0.05
@@ -275,7 +276,11 @@ def _request_labels(
 
 
 def label_photo(
-    client: OpenAI, model: str, image_b64: str, filename: str
+    client: OpenAI,
+    model: str,
+    image_b64: str,
+    filename: str,
+    reasoning_effort: str | None = None,
 ) -> tuple[dict, int, int, int]:
     """Send a photo to the LLM for labeling.
 
@@ -295,7 +300,9 @@ def label_photo(
             ],
         },
     ]
-    labels, retries, in_toks, out_toks = _request_labels(client, model, messages)
+    labels, retries, in_toks, out_toks = _request_labels(
+        client, model, messages, reasoning_effort=reasoning_effort
+    )
     logger.debug(f"Parsed: {len(labels.get('keywords', []))} keywords")
     return labels, retries, in_toks, out_toks
 
@@ -342,14 +349,18 @@ def _merge_messages(segment_labels: list[dict], transcript: str) -> list[dict]:
 
 
 def _merge_labels(
-    client: OpenAI, model: str, segment_labels: list[dict], transcript: str
+    client: OpenAI,
+    model: str,
+    segment_labels: list[dict],
+    transcript: str,
+    reasoning_effort: str | None = None,
 ) -> tuple[dict, int, int, int]:
     return _request_labels(
         client,
         model,
         _merge_messages(segment_labels, transcript),
         timeout=LLM_MERGE_TIMEOUT,
-        reasoning_effort="none",
+        reasoning_effort=reasoning_effort or "none",
     )
 
 
@@ -360,6 +371,8 @@ def label_video(
     filename: str,
     batch_size: int = 0,
     transcript: str = "",
+    *,
+    reasoning_effort: str | None = None,
 ) -> tuple[dict, int, int, int]:
     """Send video frames to the LLM for labeling.
 
@@ -387,7 +400,12 @@ def label_video(
                 f" extracted at equal intervals from a video."
                 f" Label this part of the video:"
             )
-        labels, r, i, o = _request_labels(client, model, _video_messages(batch, text))
+        labels, r, i, o = _request_labels(
+            client,
+            model,
+            _video_messages(batch, text),
+            reasoning_effort=reasoning_effort,
+        )
         segment_labels.append(labels)
         retries, in_toks, out_toks = retries + r, in_toks + i, out_toks + o
 
@@ -395,7 +413,9 @@ def label_video(
         labels = segment_labels[0]
     else:
         logger.debug(f"Merging labels from {len(segment_labels)} batches...")
-        labels, r, i, o = _merge_labels(client, model, segment_labels, transcript)
+        labels, r, i, o = _merge_labels(
+            client, model, segment_labels, transcript, reasoning_effort
+        )
         retries, in_toks, out_toks = retries + r, in_toks + i, out_toks + o
 
     logger.debug(f"Parsed: {len(labels.get('keywords', []))} keywords")
@@ -403,6 +423,10 @@ def label_video(
 
 
 def add_transcript_to_labels(
-    client: OpenAI, model: str, labels: dict, transcript: str
+    client: OpenAI,
+    model: str,
+    labels: dict,
+    transcript: str,
+    reasoning_effort: str | None = None,
 ) -> tuple[dict, int, int, int]:
-    return _merge_labels(client, model, [labels], transcript)
+    return _merge_labels(client, model, [labels], transcript, reasoning_effort)

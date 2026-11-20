@@ -154,7 +154,11 @@ def _label_and_write_photo(
     logger.info(f"{_server_label(server)} Labeling photo: {item.original_filename}")
     t_llm = time.monotonic()
     labels, llm_retries, in_toks, out_toks = label_photo(
-        client, server.model, image_b64, item.original_filename
+        client,
+        server.model,
+        image_b64,
+        item.original_filename,
+        reasoning_effort=server.reasoning_effort or None,
     )
     llm_duration = time.monotonic() - t_llm
 
@@ -296,6 +300,7 @@ def _process_single_video(
         item.original_filename,
         batch_size=video_frame_batch,
         transcript=transcript.text if transcript else "",
+        reasoning_effort=server.reasoning_effort or None,
     )
     llm_duration = time.monotonic() - t_llm
 
@@ -399,7 +404,11 @@ def _add_transcript(
     client = create_client(server.base_url, api_key=server.api_key)
     t_llm = time.monotonic()
     labels, llm_retries, in_toks, out_toks = add_transcript_to_labels(
-        client, server.model, _current_labels(item), transcript.text
+        client,
+        server.model,
+        _current_labels(item),
+        transcript.text,
+        reasoning_effort=server.reasoning_effort or None,
     )
     llm_duration = time.monotonic() - t_llm
 

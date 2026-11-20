@@ -59,6 +59,7 @@ def _resolve_servers(args, cfg) -> list[Server]:
     default_threads = (
         args.threads if args.threads is not None else cfg.get("threads", 1)
     )
+    default_effort = cfg.get("reasoning_effort", "")
 
     # 1. CLI --server wins entirely if provided (one spec per flag).
     if args.server:
@@ -69,6 +70,7 @@ def _resolve_servers(args, cfg) -> list[Server]:
                 model=s["model"],
                 api_key=s.get("api_key", ""),
                 threads=s.get("threads", default_threads),
+                reasoning_effort=default_effort,
             )
             for s in specs
         ]
@@ -84,6 +86,7 @@ def _resolve_servers(args, cfg) -> list[Server]:
                 model=args.model or first.get("model", ""),
                 api_key=args.api_key or first.get("api_key", ""),
                 threads=first.get("threads", default_threads),
+                reasoning_effort=first.get("reasoning_effort", default_effort),
             )
         ]
 
@@ -94,6 +97,7 @@ def _resolve_servers(args, cfg) -> list[Server]:
             model=s.get("model", ""),
             api_key=s.get("api_key", ""),
             threads=s.get("threads", default_threads),
+            reasoning_effort=s.get("reasoning_effort", default_effort),
         )
         for s in cfg_servers
     ]
@@ -174,7 +178,10 @@ def _run(args, cfg):
 
     pool = ServerPool(rc["servers"])
     for s in pool.servers():
-        logger.info(f"Server: {s.base_url} ({s.model}, threads={s.threads})")
+        effort = ""
+        if s.reasoning_effort:
+            effort = f", reasoning_effort={s.reasoning_effort}"
+        logger.info(f"Server: {s.base_url} ({s.model}, threads={s.threads}{effort})")
     whisper = _whisper(rc)
     if whisper:
         languages = ", ".join(whisper.languages) or "any"

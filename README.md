@@ -182,6 +182,7 @@ If no config exists when you run `icloud-image-labeler run`, the setup wizard la
 | `base_url` | `http://localhost:1234/v1` | OpenAI-compatible API endpoint |
 | `api_key` | `""` | API key (optional, empty for local LM Studio) |
 | `model` | `qwen/qwen3.5-9b` | Model identifier |
+| `reasoning_effort` | `""` | Thinking level sent with every request, e.g. `low`, `medium`, `high` (empty = the server's default, and `none` for video merge requests) |
 | `days` | `0` | Look back N days (0 = all time) |
 | `to_days` | `0` | Skip most recent N days |
 | `limit_per_cycle` | `0` | Items per cycle (0 = all) |
