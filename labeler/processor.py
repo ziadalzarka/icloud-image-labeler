@@ -32,6 +32,7 @@ from labeler.transcriber import (
     Transcript,
     Whisper,
     existing_transcript,
+    server_answers,
     transcribe_video,
 )
 from labeler.writer import (
@@ -620,6 +621,12 @@ def _label_in_parallel(
 def _add_transcripts_sequential(
     state, server_pool: ServerPool, whisper, write, tracker
 ):
+    if not server_answers(whisper):
+        logger.warning(
+            f"Whisper server {whisper.url} isn't answering; "
+            "adding transcripts next cycle"
+        )
+        return
     total = len(state.untranscribed)
     for position, video in enumerate(state.untranscribed, start=1):
         if is_shutting_down():

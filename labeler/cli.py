@@ -126,6 +126,10 @@ def _resolve_config(args, cfg):
             args.transcribe if args.transcribe is not None else cfg["transcribe"]
         ),
         "whisper_model": args.whisper_model or cfg["whisper_model"],
+        "whisper_url": (
+            args.whisper_url if args.whisper_url is not None else cfg["whisper_url"]
+        ),
+        "whisper_api_key": cfg["whisper_api_key"],
         "whisper_languages": (
             args.whisper_languages
             if args.whisper_languages is not None
@@ -152,13 +156,20 @@ def _whisper(rc) -> Whisper | None:
     if not rc["video"]:
         logger.warning("Transcription runs as part of video labeling, which is off.")
         return None
-    if not transcription_available():
+    url = rc["whisper_url"].rstrip("/")
+    if not url and not transcription_available():
         logger.error(
             "Transcription needs mlx-whisper, which runs on Apple Silicon only. "
-            f"Install it with: {INSTALL_HINT}"
+            f"Install it with: {INSTALL_HINT}, or set whisper_url to a Whisper "
+            "server."
         )
         return None
-    return Whisper(rc["whisper_model"], parse_languages(rc["whisper_languages"]))
+    return Whisper(
+        rc["whisper_model"],
+        parse_languages(rc["whisper_languages"]),
+        url=url,
+        api_key=rc["whisper_api_key"],
+    )
 
 
 def _untranscribed_limit(limit: int) -> int:
@@ -186,7 +197,9 @@ def _run(args, cfg):
     whisper = _whisper(rc)
     if whisper:
         languages = ", ".join(whisper.languages) or "any"
-        logger.info(f"Transcription: {whisper.model} (languages: {languages})")
+        logger.info(
+            f"Transcription: {whisper.url or whisper.model} (languages: {languages})"
+        )
     expected_tags = pool.model_tags()
     expected_video_tag = (
         video_settings_tag(rc["video_frames"], rc["video_frame_batch"])
@@ -430,6 +443,11 @@ def _build_run_parser(subparsers):
         "--whisper-model",
         default=None,
         help="Whisper model for transcription (MLX format, e.g. a Hugging Face repo)",
+    )
+    run_parser.add_argument(
+        "--whisper-url",
+        default=None,
+        help="Whisper server to send audio to instead of running mlx-whisper here",
     )
     run_parser.add_argument(
         "--whisper-languages",

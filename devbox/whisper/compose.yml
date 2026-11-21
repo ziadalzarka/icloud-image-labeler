@@ -1,0 +1,25 @@
+name: labeler-whisper
+
+services:
+  labeler-whisper:
+    build: .
+    image: labeler-whisper:1
+    container_name: labeler-whisper
+    user: "1000:1000"
+    ports:
+      - "8178:8178"
+    environment:
+      IDLE_UNLOAD_SECONDS: "${IDLE_UNLOAD_SECONDS:-300}"
+    volumes:
+      - ./cache:/cache:ro
+      - ./api-key:/run/secrets/api-key:ro
+    gpus: all
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8178/health')"]
+      interval: 30s
+      timeout: 5s
+    labels:
+      rt.keep: "true"
+    mem_limit: 3g
+    memswap_limit: 3g
+    restart: unless-stopped

@@ -18,9 +18,10 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
   - `exporter.py` — HEIC-to-JPEG conversion, video frame extraction (ffmpeg)
   - `llm.py` — OpenAI-compatible LLM client, response parsing, retry
   - `processor.py` — batch orchestration: photos then videos, each exported on the main thread and labeled and written in worker threads, error tracking
-  - `transcriber.py` — optional mlx-whisper transcription of videos, called from video processing
+  - `transcriber.py` — optional Whisper transcription of videos, with mlx-whisper on the Mac or a Whisper server (`whisper_url`), called from video processing
   - `migrate.py` — `migrate normalize-keywords` and `migrate redo-transcripts` commands for existing libraries
   - `writer.py` — PhotoScript metadata writes with thread-safe locking
+- `devbox/whisper/` — the faster-whisper server (Docker, CUDA) that runs on devbox
 
 ## Key Constraints
 
@@ -34,7 +35,7 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
 - Images resized to `max_dimension` before sending to LLM to avoid context window exhaustion
 - All keywords are written lowercase, without commas, and deduplicated (`normalize_keywords` in `writer.py`). Photos' Info window splits keywords at commas when the keyword field is clicked
 - Under Homebrew the daemon plist uses `/opt/homebrew/opt/icloud-image-labeler/...`, not the versioned Cellar path that `brew upgrade` deletes (`_homebrew_opt_path` in `daemon.py`)
-- Transcription is optional (`transcribe` config, `mlx-whisper` is an optional extra) and part of video labeling: the video is exported once, transcribed, and the transcript goes into the merge request (`label_video`), so labels use what is said. A video with a `trans:` keyword reuses it instead of running Whisper again. Every video gets one of `trans:<text>`, `trans:no-speech` or `trans:no-audio`
+- Transcription is optional (`transcribe` config, `mlx-whisper` is an optional extra, or `whisper_url` points at the devbox server, which takes 16 kHz int16 PCM on `POST /languages` and `POST /transcribe` and returns Whisper's raw scores so the filtering stays on the Mac) and part of video labeling: the video is exported once, transcribed, and the transcript goes into the merge request (`label_video`), so labels use what is said. A video with a `trans:` keyword reuses it instead of running Whisper again. Every video gets one of `trans:<text>`, `trans:no-speech` or `trans:no-audio`
 - Labeled videos (`m:` tag) without a `trans:` keyword are found by `get_untranscribed_videos`, up to `UNTRANSCRIBED_VIDEOS_PER_CYCLE` per cycle, and handled after the cycle's other videos: transcribe, then a text-only request (`add_transcript_to_labels`) updates title, description and keywords. Their `m:`/`v:`/`ocr:` keywords are kept (`write_labels_with_transcript`). These rows are recorded in metrics with `media_type='transcript'`
 - Labeling keeps `trans:` keywords when it rewrites keywords, and a video whose only keywords are `trans:` ones still counts as unlabeled (`is_unlabeled` in `discovery.py`)
 - Whisper invents text on music, noise and silence ("thank you for watching", "اشتركوا في القناة", text in a language nobody spoke). With `whisper_languages` set, the language is detected per 30 s window; windows where the listed languages together score below 0.5 are skipped and each other window is transcribed in its own language (`_window_languages` in `transcriber.py`). Segments are dropped by `_is_speech`: avg_logprob below -1.0, compression_ratio above 2.4, no_speech_prob above 0.85 (or above 0.6 with avg_logprob below -0.5), or only phrases from `MADE_UP_PHRASES`. These thresholds were picked on 75 videos from the library; song lyrics score 0.6-0.8 no_speech_prob and are kept

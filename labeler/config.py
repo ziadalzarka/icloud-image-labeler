@@ -25,6 +25,8 @@ DEFAULTS = {
     "transcribe": False,
     "whisper_model": "mlx-community/whisper-large-v3-mlx",
     "whisper_languages": "",
+    "whisper_url": "",
+    "whisper_api_key": "",
     "write": True,
 }
 

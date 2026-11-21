@@ -94,6 +94,17 @@ icloud-image-labeler config set whisper_languages ar,en
 
 Codes are Whisper's two-letter language codes (`ar`, `en`, `fr`, ...). With one language, detection is skipped.
 
+#### Transcribing on another machine
+
+Whisper can run on another machine with a GPU instead of this Mac. `devbox/whisper/` has a small server for that: faster-whisper `large-v3` in a CUDA container, which loads the model on the first request and unloads it after 5 minutes with no requests. The Mac sends each video's audio and keeps all the steps above (language per 30 seconds, dropping made-up text), so transcripts come out the same way. mlx-whisper isn't needed on the Mac then.
+
+```sh
+icloud-image-labeler config set whisper_url http://devbox.local:8178
+icloud-image-labeler config set whisper_api_key <the server's key>
+```
+
+If the server doesn't answer, new videos are labeled without a transcript and get one in a later cycle, once it answers again.
+
 ### iCloud Settings
 
 For best performance, go to **System Settings → Apple Account → iCloud → Photos** and enable **Download Originals to this Mac**. This downloads all photos in advance so the labeler doesn't have to wait for individual iCloud downloads during processing.
@@ -150,6 +161,7 @@ icloud-image-labeler run -v
 | `--video` / `--no-video` | Include/exclude videos |
 | `--transcribe` / `--no-transcribe` | Transcribe speech in videos and use it in their labels (needs mlx-whisper) |
 | `--whisper-model REPO` | Whisper model for transcription |
+| `--whisper-url URL` | Whisper server to send audio to instead of running mlx-whisper on this Mac |
 | `--whisper-languages CODES` | Languages speech can be in, e.g. `ar,en` |
 | `--write` | Force write metadata |
 | `--dry-run` | Preview without writing |
@@ -195,6 +207,8 @@ If no config exists when you run `icloud-image-labeler run`, the setup wizard la
 | `transcribe` | `false` | Transcribe speech in videos and use it in their labels (needs mlx-whisper) |
 | `whisper_model` | `mlx-community/whisper-large-v3-mlx` | Whisper model for transcription |
 | `whisper_languages` | `""` | Comma-separated languages speech can be in, e.g. `ar,en` (empty = any) |
+| `whisper_url` | `""` | Whisper server to send audio to (empty = mlx-whisper on this Mac) |
+| `whisper_api_key` | `""` | Key for the Whisper server |
 | `write` | `true` | Write metadata to Photos.app |
 | `poll_interval` | `300` | Seconds between cycles in loop/daemon mode |
 
@@ -256,7 +270,7 @@ labeler/
   exporter.py   — photo export (HEIC/iCloud fallbacks), video frame extraction
   llm.py        — OpenAI-compatible client, JSON parsing, retry logic
   processor.py  — batch orchestration: export in turn, label and write in parallel
-  transcriber.py — optional Whisper transcription of videos, used by video labeling
+  transcriber.py — optional Whisper transcription of videos (local or on a server), used by video labeling
   migrate.py    — one-off keyword migrations (normalize-keywords)
   writer.py     — PhotoScript metadata writes (thread-safe)
   metrics.py    — SQLite metrics recording

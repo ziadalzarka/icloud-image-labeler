@@ -20,6 +20,7 @@ dependencies = [
     "osxphotos",
     "photoscript",
     "openai",
+    "httpx",
     "Pillow",
     "pillow-heif",
     "datasette",
