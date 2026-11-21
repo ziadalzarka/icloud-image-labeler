@@ -18,6 +18,8 @@ classifiers = [
 ]
 dependencies = [
     "osxphotos",
+    "pyobjc-framework-Cocoa",
+    "pyobjc-framework-Photos",
     "photoscript",
     "openai",
     "httpx",

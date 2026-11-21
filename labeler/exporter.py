@@ -1,15 +1,19 @@
 """HEIC-to-JPEG photo conversion and video frame extraction."""
 
 import base64
+import io
 import logging
 import subprocess
 import tempfile
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 import osxphotos
+import Photos
+from Foundation import NSDate, NSRunLoop
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +28,9 @@ MIN_FRAME_SPACING_S = 0.5
 PHOTOS_APP_QUIT_TIMEOUT_S = 20
 PHOTOS_APP_STARTUP_WAIT_S = 10
 AUDIO_SAMPLE_RATE = 16000
+PHOTOKIT_POLL_S = 0.05
+
+_photos_access_requested = threading.Event()
 
 
 def _resize_if_needed(img, max_dim: int):
@@ -64,6 +71,81 @@ def _open_image(path: str, tmpdir: str):
                 f"sips conversion failed for {Path(path).name}: {result.stderr.strip()}"
             ) from None
         return Image.open(sips_jpg)
+
+
+def _photos_access_allowed() -> bool:
+    status = Photos.PHPhotoLibrary.authorizationStatusForAccessLevel_(
+        Photos.PHAccessLevelReadWrite
+    )
+    if status == Photos.PHAuthorizationStatusNotDetermined:
+        if not _photos_access_requested.is_set():
+            _photos_access_requested.set()
+            logger.info("Asking for access to Photos to read smaller versions")
+            Photos.PHPhotoLibrary.requestAuthorizationForAccessLevel_handler_(
+                Photos.PHAccessLevelReadWrite, lambda _status: None
+            )
+        return False
+    return status == Photos.PHAuthorizationStatusAuthorized
+
+
+def _photokit_asset(photo):
+    if not _photos_access_allowed():
+        return None
+    return Photos.PHAsset.fetchAssetsWithLocalIdentifiers_options_(
+        [f"{photo.uuid}/L0/001"], None
+    ).firstObject()
+
+
+def _wait_for_photokit(photo, start, timeout: float):
+    done = threading.Event()
+    result = []
+
+    def finish(value):
+        result.append(value)
+        done.set()
+
+    manager = Photos.PHImageManager.defaultManager()
+    request_id = start(manager, finish)
+    deadline = time.monotonic() + timeout
+    while not done.is_set():
+        if time.monotonic() > deadline:
+            manager.cancelImageRequest_(request_id)
+            logger.warning(f"Photos didn't return {photo.uuid} within {timeout:.0f}s")
+            return None
+        NSRunLoop.currentRunLoop().runUntilDate_(
+            NSDate.dateWithTimeIntervalSinceNow_(PHOTOKIT_POLL_S)
+        )
+    return result[0]
+
+
+def _photokit_image(photo, max_dimension: int):
+    from PIL import Image
+
+    asset = _photokit_asset(photo)
+    if asset is None:
+        return None
+    options = Photos.PHImageRequestOptions.alloc().init()
+    options.setNetworkAccessAllowed_(True)
+    options.setDeliveryMode_(Photos.PHImageRequestOptionsDeliveryModeHighQualityFormat)
+    options.setResizeMode_(Photos.PHImageRequestOptionsResizeModeExact)
+
+    def start(manager, finish):
+        request_image = (
+            manager.requestImageForAsset_targetSize_contentMode_options_resultHandler_
+        )
+        return request_image(
+            asset,
+            (max_dimension, max_dimension),
+            Photos.PHImageContentModeAspectFit,
+            options,
+            lambda image, _info: finish(image),
+        )
+
+    image = _wait_for_photokit(photo, start, PHOTO_EXPORT_TIMEOUT)
+    tiff = image.TIFFRepresentation() if image is not None else None
+    if tiff is None:
+        return None
+    return Image.open(io.BytesIO(bytes(tiff)))
 
 
 def _resolve_export_path(photo, tmpdir):
@@ -137,8 +219,10 @@ def export_photo_as_base64(
     """Export photo as JPEG and return (base64_string, metadata_dict)."""
     logger.debug(f"Exporting photo (missing={photo.ismissing})...")
     with tempfile.TemporaryDirectory() as tmpdir:
-        export_path = _resolve_export_path(photo, tmpdir)
-        img = _open_or_fallback(photo, export_path, tmpdir)
+        img = _photokit_image(photo, max_dimension)
+        if img is None:
+            export_path = _resolve_export_path(photo, tmpdir)
+            img = _open_or_fallback(photo, export_path, tmpdir)
         return _encode_as_jpeg(img, max_dimension, tmpdir)
 
 
@@ -183,14 +267,41 @@ def _restart_photos_app():
     time.sleep(PHOTOS_APP_STARTUP_WAIT_S)
 
 
+def _medium_quality_video(photo) -> str | None:
+    asset = _photokit_asset(photo)
+    if asset is None:
+        return None
+    options = Photos.PHVideoRequestOptions.alloc().init()
+    options.setNetworkAccessAllowed_(True)
+    options.setDeliveryMode_(
+        Photos.PHVideoRequestOptionsDeliveryModeMediumQualityFormat
+    )
+
+    def start(manager, finish):
+        return manager.requestAVAssetForVideo_options_resultHandler_(
+            asset, options, lambda av_asset, _audio_mix, _info: finish(av_asset)
+        )
+
+    av_asset = _wait_for_photokit(photo, start, VIDEO_EXPORT_TIMEOUT)
+    if av_asset is None or not hasattr(av_asset, "URL"):
+        return None
+    url = av_asset.URL()
+    return url.path() if url.isFileURL() else None
+
+
 def _resolve_video_path(photo, tmpdir):
-    """Export video via Photos; fall back to the on-disk original.
+    """Use Photos' 720p version of the video; otherwise export the original
+    via Photos, falling back to the on-disk original.
 
     Photos.app's export pipeline sometimes returns a ~1 KB sidecar stub
     instead of the rendered video (observed for many iPhone HEVC .MOV files).
     Validate the export produced a real video stream, otherwise fall back
     to ``photo.path``.
     """
+    medium = _medium_quality_video(photo)
+    if medium and Path(medium).exists() and _has_video_stream(medium):
+        return medium
+
     exported = photo.export(
         tmpdir, use_photos_export=True, timeout=VIDEO_EXPORT_TIMEOUT
     )

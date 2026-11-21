@@ -15,7 +15,7 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
   - `config.py` — `~/.image-labeler/config.json` management
   - `daemon.py` — launchd Launch Agent lifecycle
   - `discovery.py` — osxphotos query for unprocessed media
-  - `exporter.py` — HEIC-to-JPEG conversion, video frame extraction (ffmpeg)
+  - `exporter.py` — PhotoKit requests for smaller photo and video versions, Photos export fallback with HEIC-to-JPEG conversion, video frame extraction (ffmpeg)
   - `llm.py` — OpenAI-compatible LLM client, response parsing, retry
   - `processor.py` — batch orchestration: photos then videos, each exported on the main thread and labeled and written in worker threads, error tracking
   - `transcriber.py` — optional Whisper transcription of videos, with mlx-whisper on the Mac or a Whisper server (`whisper_url`), called from video processing
@@ -25,7 +25,8 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
 
 ## Key Constraints
 
-- `use_photos_export=True` always (not just for missing/iCloud-only files)
+- Photos are requested through PhotoKit at `max_dimension` (`_photokit_image`) and videos as Photos' 720p version (`_medium_quality_video`), both on the main thread, so iCloud-only items don't download the original (a 4K video is 360-700 MB, iCloud gives about 4.7 MB/s). When PhotoKit access isn't allowed or returns nothing (e.g. slow-motion videos give an `AVComposition`), the Photos export of the original is used
+- `use_photos_export=True` always for that export (not just for missing/iCloud-only files)
 - PhotoScript writes must be serialized (AppleScript is single-threaded) — `_write_lock` in `writer.py`
 - Exports run one at a time on the main thread (osxphotos SQLite is bound to it); LLM requests and the Photos write run in up to `threads` worker threads. Photos and videos are separate phases in `processor.py` (`_label_in_parallel`). A 429 from the LLM server is retried with backoff
 - Video frames are labeled `video_frame_batch` at a time, then a text-only request merges the batch labels (`label_video` in `llm.py`)

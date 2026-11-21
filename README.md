@@ -12,7 +12,7 @@ Photos.app ──> Discovery ──> Export ──> LLM ──> Writer ──> P
 ```
 
 1. **Discovery** — Queries the Photos library for media with no keywords set, filtered by date range and media type. Items this tool labeled with another model, and videos it labeled with other frame settings, are relabeled too, newest first, up to 500 photos and 50 videos per cycle; while more remain, the next cycle starts right away instead of waiting for the poll interval.
-2. **Export** — Exports photos as JPEG (with HEIC/iCloud fallbacks), extracts frames from videos via ffmpeg (evenly spaced, at most 2 per second).
+2. **Export** — Gets each photo from Photos at `max_dimension` as JPEG and each video at 720p (exporting the original when Photos can't), then extracts frames from videos via ffmpeg (evenly spaced, at most 2 per second).
 3. **LLM** — Sends images to an OpenAI-compatible API. Returns structured JSON with keywords, title, description, and OCR text. Video frames are sent in batches, and a final text-only request merges the batch results into one set of labels.
 4. **Writer** — Writes metadata back into Photos.app via PhotoScript (AppleScript automation).
 
@@ -107,7 +107,9 @@ If the server doesn't answer, new videos are labeled without a transcript and ge
 
 ### iCloud Settings
 
-For best performance, go to **System Settings → Apple Account → iCloud → Photos** and enable **Download Originals to this Mac**. This downloads all photos in advance so the labeler doesn't have to wait for individual iCloud downloads during processing.
+The labeler asks Photos for a smaller version of each item: photos at `max_dimension` and videos at 720p. Photos often already has these on the Mac, and when it doesn't, iCloud sends the smaller version instead of the original, so a 700 MB 4K video becomes a download of about 45 MB. The first time, macOS asks whether Python may access your Photos; allow it. Without that access, or for items Photos can't give a smaller version of (such as slow-motion videos), the labeler exports the original through Photos as before.
+
+**Download Originals to this Mac** (System Settings → Apple Account → iCloud → Photos) is no longer needed for speed.
 
 ## Quick Start
 
@@ -267,7 +269,7 @@ labeler/
   init.py       — interactive first-run setup wizard
   config.py     — ~/.image-labeler/config.json management
   discovery.py  — osxphotos query for unprocessed media
-  exporter.py   — photo export (HEIC/iCloud fallbacks), video frame extraction
+  exporter.py   — smaller photo and video versions via PhotoKit, Photos export fallback, video frame extraction
   llm.py        — OpenAI-compatible client, JSON parsing, retry logic
   processor.py  — batch orchestration: export in turn, label and write in parallel
   transcriber.py — optional Whisper transcription of videos (local or on a server), used by video labeling
