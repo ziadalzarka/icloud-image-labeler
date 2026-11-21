@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime
 
 from labeler.config import CONFIG_DIR
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 PAUSE_PATH = CONFIG_DIR / "paused"
 PAUSE_LIMIT_S = 3600
+MAX_PAUSE_MINUTES = 60
 WAIT_INTERVAL_S = 1
 
 
@@ -19,42 +21,64 @@ class StoppedWhilePausedError(RuntimeError):
         super().__init__("Stopped while paused, nothing was written")
 
 
-def pause():
+@dataclass(frozen=True)
+class Pause:
+    since: float
+    resumes_at: float | None
+
+    @property
+    def stops_at(self) -> float:
+        return self.since + PAUSE_LIMIT_S
+
+    def is_over(self) -> bool:
+        return self.resumes_at is not None and time.time() >= self.resumes_at
+
+    def has_expired(self) -> bool:
+        return self.resumes_at is None and time.time() >= self.stops_at
+
+
+def pause(minutes: int | None = None):
     PAUSE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PAUSE_PATH.touch()
+    resumes_at = "" if minutes is None else str(time.time() + minutes * 60)
+    written = PAUSE_PATH.with_name(f"{PAUSE_PATH.name}.new")
+    written.write_text(resumes_at)
+    written.replace(PAUSE_PATH)
 
 
 def resume():
     PAUSE_PATH.unlink(missing_ok=True)
 
 
-def paused_since() -> float | None:
+def current() -> Pause | None:
     try:
-        return PAUSE_PATH.stat().st_mtime
+        since = PAUSE_PATH.stat().st_mtime
+        text = PAUSE_PATH.read_text().strip()
     except FileNotFoundError:
         return None
+    try:
+        resumes_at = float(text) if text else None
+    except ValueError:
+        resumes_at = None
+    return Pause(since=since, resumes_at=resumes_at)
+
+
+def active() -> Pause | None:
+    found = current()
+    return None if found is None or found.is_over() else found
 
 
 def is_paused() -> bool:
-    return PAUSE_PATH.exists()
-
-
-def stops_at(since: float) -> float:
-    return since + PAUSE_LIMIT_S
-
-
-def has_expired() -> bool:
-    since = paused_since()
-    return since is not None and time.time() >= stops_at(since)
+    return active() is not None
 
 
 def clock_time(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp).strftime("%H:%M")
 
 
-def clear_if_expired():
-    if has_expired():
-        logger.info("Clearing a pause that ran past its hour")
+def clear_if_over():
+    found = current()
+    if found is not None and (found.is_over() or found.has_expired()):
+        logger.info("Clearing an old pause")
         resume()
 
 
@@ -75,22 +99,31 @@ def watch(stop):
     ).start()
 
 
+def _describe(found: Pause) -> str:
+    if found.resumes_at is not None:
+        return (
+            f"Paused until {clock_time(found.resumes_at)}: nothing is exported "
+            "or written to Photos"
+        )
+    return (
+        "Paused: nothing is exported or written to Photos until 'daemon resume'. "
+        f"Stopping for good at {clock_time(found.stops_at)}"
+    )
+
+
 def _watch(stop):
-    was_paused = False
+    seen = None
     while not shutdown_wait(WAIT_INTERVAL_S):
-        since = paused_since()
-        if since is None:
-            if was_paused:
+        found = active()
+        if found is None:
+            if seen is not None:
                 logger.info("Resumed")
-            was_paused = False
+            seen = None
             continue
-        if not was_paused:
-            logger.info(
-                "Paused: nothing is exported or written to Photos until "
-                f"'daemon resume'. Stopping for good at {clock_time(stops_at(since))}"
-            )
-        was_paused = True
-        if time.time() >= stops_at(since):
+        if found != seen:
+            logger.info(_describe(found))
+        seen = found
+        if found.has_expired():
             logger.info("Paused for an hour without a resume, stopping for good")
             stop()
             return

@@ -248,7 +248,7 @@ def _run(args, cfg):
         )
         return items, untranscribed
 
-    pause.clear_if_expired()
+    pause.clear_if_over()
     pause.watch(_stop_after_pause)
     try:
         _label_loop(args, rc, pool, whisper, discover)
@@ -359,6 +359,9 @@ def _config_cmd(args, cfg):
 
 def _daemon_cmd(args):
     action = args.daemon_action
+    if args.minutes is not None and action != "pause":
+        print("--minutes only works with 'daemon pause'")
+        sys.exit(1)
     if action == "start":
         daemon.start()
     elif action == "stop":
@@ -368,7 +371,7 @@ def _daemon_cmd(args):
     elif action == "status":
         daemon.status()
     elif action == "pause":
-        daemon.pause()
+        daemon.pause(args.minutes)
     elif action == "resume":
         daemon.resume()
     else:
@@ -450,6 +453,15 @@ def _metrics_cmd(args):
                     str(dashboard_path),
                 ]
             )
+
+
+def _pause_minutes(value: str) -> int:
+    minutes = int(value)
+    if not 1 <= minutes <= pause.MAX_PAUSE_MINUTES:
+        raise argparse.ArgumentTypeError(
+            f"must be between 1 and {pause.MAX_PAUSE_MINUTES}"
+        )
+    return minutes
 
 
 def _build_run_parser(subparsers):
@@ -555,6 +567,15 @@ def _build_parser():
     daemon_parser.add_argument(
         "daemon_action",
         choices=["start", "stop", "restart", "status", "pause", "resume"],
+    )
+    daemon_parser.add_argument(
+        "--minutes",
+        type=_pause_minutes,
+        default=None,
+        help=(
+            f"With pause: carry on by itself after this many minutes "
+            f"(1-{pause.MAX_PAUSE_MINUTES})"
+        ),
     )
 
     config_parser = subparsers.add_parser("config", help="Manage configuration")

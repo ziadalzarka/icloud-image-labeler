@@ -102,37 +102,47 @@ def status():
     if not is_running():
         print("Daemon is not running.")
         return
-    since = pause_file.paused_since()
-    if since is None:
+    found = pause_file.active()
+    if found is None:
         print("Daemon is running.")
+    elif found.resumes_at is not None:
+        print(f"Daemon is paused until {pause_file.clock_time(found.resumes_at)}.")
+    else:
+        print(
+            f"Daemon is paused since {pause_file.clock_time(found.since)}. It stops "
+            f"at {pause_file.clock_time(found.stops_at)} unless you run "
+            "'icloud-image-labeler daemon resume'."
+        )
+
+
+def pause(minutes: int | None = None):
+    pause_file.pause(minutes)
+    found = pause_file.current()
+    if found.resumes_at is not None:
+        print(
+            f"Paused until {pause_file.clock_time(found.resumes_at)}. Requests "
+            "already sent to the LLM finish, but nothing new is exported or "
+            "written to Photos until then."
+        )
+        print("Run 'icloud-image-labeler daemon resume' to carry on sooner.")
         return
-    print(
-        f"Daemon is paused since {pause_file.clock_time(since)}. It stops at "
-        f"{pause_file.clock_time(pause_file.stops_at(since))} unless you run "
-        "'icloud-image-labeler daemon resume'."
-    )
-
-
-def pause():
-    pause_file.pause()
-    stops_at = pause_file.stops_at(pause_file.paused_since())
     print(
         "Paused. Requests already sent to the LLM finish, but nothing new is "
         "exported or written to Photos."
     )
     print(
         "Run 'icloud-image-labeler daemon resume' before "
-        f"{pause_file.clock_time(stops_at)}, or the daemon stops and stays stopped."
+        f"{pause_file.clock_time(found.stops_at)}, or the daemon stops and stays "
+        "stopped."
     )
 
 
 def resume():
-    if not pause_file.is_paused():
-        print("Not paused.")
-        return
-    expired = pause_file.has_expired()
+    found = pause_file.active()
     pause_file.resume()
-    if expired:
+    if found is None:
+        print("Not paused.")
+    elif found.has_expired():
         print(
             "The pause went past an hour, so the daemon stopped. Start it again "
             "with 'icloud-image-labeler daemon start'."
