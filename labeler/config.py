@@ -80,7 +80,6 @@ def resolve_servers(cfg: dict) -> list[dict]:
             "base_url": cfg.get("base_url", ""),
             "model": cfg.get("model", ""),
             "api_key": cfg.get("api_key", ""),
-            "threads": cfg.get("threads", 1),
         }
     ]
 
