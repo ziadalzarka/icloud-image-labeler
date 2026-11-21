@@ -32,6 +32,7 @@ OUTDATED_PHOTOS_PER_CYCLE = 500
 OUTDATED_VIDEOS_PER_CYCLE = 50
 UNTRANSCRIBED_VIDEOS_PER_CYCLE = 500
 PRE_BATCHING_VIDEO_FRAMES = 5
+HIDDEN_VALUE = "<hidden>"
 
 
 def _setup_logging(verbose: bool = False):
@@ -303,18 +304,34 @@ def _process_one_cycle(args, rc, pool, whisper, discover) -> tuple[bool, bool]:
     return True, backlog and labeled > 0
 
 
+def _hide_api_keys(value):
+    if isinstance(value, dict):
+        return {
+            k: HIDDEN_VALUE if k.endswith("api_key") and v else _hide_api_keys(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_hide_api_keys(v) for v in value]
+    return value
+
+
+def _shown_setting(key: str) -> str:
+    value = _hide_api_keys({key: config.load_config()[key]})[key]
+    return value if isinstance(value, str) else json.dumps(value)
+
+
 def _config_cmd(args, cfg):
     action = args.config_action
 
     if action == "show":
-        print(json.dumps(cfg, indent=2))
+        print(json.dumps(_hide_api_keys(cfg), indent=2))
     elif action == "set":
         if not args.key or not args.value:
             print("Usage: labeler config set <key> <value>")
             sys.exit(1)
         try:
             config.set_value(args.key, args.value)
-            print(f"Set {args.key} = {args.value}")
+            print(f"Set {args.key} = {_shown_setting(args.key)}")
         except ValueError as e:
             print(str(e))
             sys.exit(1)
