@@ -11,7 +11,7 @@ Photos.app ──> Discovery ──> Export ──> LLM ──> Writer ──> P
                (osxphotos)   (Pillow)   (API)   (PhotoScript)
 ```
 
-1. **Discovery** — Queries the Photos library for media with no keywords set, filtered by date range and media type. Videos this tool labeled with other frame settings are relabeled too, up to 20 per cycle; while more remain, the next cycle starts right away instead of waiting for the poll interval.
+1. **Discovery** — Queries the Photos library for media with no keywords set, filtered by date range and media type. Items this tool labeled with another model, and videos it labeled with other frame settings, are relabeled too, newest first, up to 500 photos and 50 videos per cycle; while more remain, the next cycle starts right away instead of waiting for the poll interval.
 2. **Export** — Exports photos as JPEG (with HEIC/iCloud fallbacks), extracts frames from videos via ffmpeg (evenly spaced, at most 2 per second).
 3. **LLM** — Sends images to an OpenAI-compatible API. Returns structured JSON with keywords, title, description, and OCR text. Video frames are sent in batches, and a final text-only request merges the batch results into one set of labels.
 4. **Writer** — Writes metadata back into Photos.app via PhotoScript (AppleScript automation).
@@ -161,7 +161,7 @@ icloud-image-labeler run -v
 | `--video-frame-batch N` | Video frames per LLM request (0 = all in one) |
 | `--uuid UUID [...]` | Process specific photo UUIDs |
 | `--loop` | Run continuously with poll interval |
-| `--reindex` | Reprocess items labeled by a different model, and videos labeled with different frame settings |
+| `--reindex` | Reprocess everything labeled by a different model, or videos labeled with different frame settings, in one run with no per-cycle limit, and items with keywords but no model tag |
 | `-v, --verbose` | Debug logging |
 
 ## Configuration

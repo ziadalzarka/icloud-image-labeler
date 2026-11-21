@@ -28,7 +28,8 @@ logger = logging.getLogger("labeler")
 
 DEFAULT_REFRESH_INTERVAL = 21600  # seconds (6 hours)
 DEFAULT_DATASETTE_PORT = 8001
-OUTDATED_VIDEOS_PER_CYCLE = 20
+OUTDATED_PHOTOS_PER_CYCLE = 500
+OUTDATED_VIDEOS_PER_CYCLE = 50
 UNTRANSCRIBED_VIDEOS_PER_CYCLE = 500
 PRE_BATCHING_VIDEO_FRAMES = 5
 
@@ -186,7 +187,7 @@ def _run(args, cfg):
     if whisper:
         languages = ", ".join(whisper.languages) or "any"
         logger.info(f"Transcription: {whisper.model} (languages: {languages})")
-    expected_tags = pool.model_tags() if rc["reindex"] else None
+    expected_tags = pool.model_tags()
     expected_video_tag = (
         video_settings_tag(rc["video_frames"], rc["video_frame_batch"])
         if _video_labeling_changed(rc["video_frames"], rc["video_frame_batch"])
@@ -210,6 +211,7 @@ def _run(args, cfg):
             reindex=rc["reindex"],
             expected_model_tags=expected_tags,
             expected_video_tag=expected_video_tag,
+            outdated_photo_limit=OUTDATED_PHOTOS_PER_CYCLE,
             outdated_video_limit=OUTDATED_VIDEOS_PER_CYCLE,
         )
         untranscribed = (
@@ -242,7 +244,7 @@ def _label_loop(args, rc, pool, whisper, discover):
             break
         if more_backlog:
             logger.info(
-                "More videos to relabel or transcribe remain; "
+                "More items to relabel or transcribe remain; "
                 "starting the next cycle now"
             )
             continue
@@ -267,7 +269,7 @@ def _process_one_cycle(args, rc, pool, whisper, discover) -> tuple[bool, bool]:
         logger.info("No unprocessed media found.")
         return True, False
 
-    videos_ok = process_batch(
+    labeled = process_batch(
         items,
         server_pool=pool,
         video_frames=rc["video_frames"],
@@ -279,12 +281,13 @@ def _process_one_cycle(args, rc, pool, whisper, discover) -> tuple[bool, bool]:
         whisper=whisper,
         untranscribed=untranscribed,
     )
-    outdated = sum(1 for p in items if not p.isphoto and not is_unlabeled(p))
+    outdated = [p for p in items if not is_unlabeled(p)]
     backlog = (
-        outdated >= OUTDATED_VIDEOS_PER_CYCLE
+        sum(1 for p in outdated if p.isphoto) >= OUTDATED_PHOTOS_PER_CYCLE
+        or sum(1 for p in outdated if not p.isphoto) >= OUTDATED_VIDEOS_PER_CYCLE
         or len(untranscribed) >= UNTRANSCRIBED_VIDEOS_PER_CYCLE
     )
-    return True, backlog and videos_ok > 0
+    return True, backlog and labeled > 0
 
 
 def _config_cmd(args, cfg):

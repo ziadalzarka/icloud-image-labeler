@@ -63,37 +63,46 @@ def _needs_reindex(
     )
 
 
-def _is_outdated_video(p: osxphotos.PhotoInfo, expected_video_tag: str) -> bool:
-    keywords = p.keywords or ()
-    return not p.isphoto and expected_video_tag not in keywords and _has_model_tag(p)
+def _is_outdated(
+    p: osxphotos.PhotoInfo, model_tags: set[str], expected_video_tag: str | None
+) -> bool:
+    return _has_model_tag(p) and _needs_reindex(p, model_tags, expected_video_tag)
 
 
-def _outdated_videos(
+def _newest(items: list[osxphotos.PhotoInfo], limit: int) -> list[osxphotos.PhotoInfo]:
+    return items[:limit] if limit > 0 else items
+
+
+def _outdated_items(
     recent: list[osxphotos.PhotoInfo],
     skip_uuids: set[str],
+    model_tags: set[str],
     expected_video_tag: str | None,
-    limit: int,
+    photo_limit: int,
+    video_limit: int,
 ) -> list[osxphotos.PhotoInfo]:
-    if expected_video_tag is None:
-        return []
     outdated = sorted(
         (
             p
             for p in recent
             if not p.hidden
             and p.uuid not in skip_uuids
-            and _is_outdated_video(p, expected_video_tag)
+            and _is_outdated(p, model_tags, expected_video_tag)
         ),
         key=lambda p: p.date_added or p.date,
         reverse=True,
     )
-    taken = outdated[:limit] if limit > 0 else outdated
+    photos = [p for p in outdated if p.isphoto]
+    videos = [p for p in outdated if not p.isphoto]
+    taken_photos = _newest(photos, photo_limit)
+    taken_videos = _newest(videos, video_limit)
     if outdated:
         logger.info(
-            f"Found {len(outdated)} videos labeled with other frame settings; "
-            f"relabeling {len(taken)} this cycle"
+            f"Found {len(photos)} photos and {len(videos)} videos labeled with "
+            "another model or other frame settings; relabeling "
+            f"{len(taken_photos)} photos and {len(taken_videos)} videos this cycle"
         )
-    return taken
+    return taken_photos + taken_videos
 
 
 def get_unprocessed_media(
@@ -106,6 +115,7 @@ def get_unprocessed_media(
     reindex: bool = False,
     expected_model_tags: set[str] | None = None,
     expected_video_tag: str | None = None,
+    outdated_photo_limit: int = 0,
     outdated_video_limit: int = 0,
 ) -> list[osxphotos.PhotoInfo]:
     """Query Photos library for unprocessed media.
@@ -116,16 +126,22 @@ def get_unprocessed_media(
         to_days: Skip the most recent N days (e.g. 7 = exclude last 7 days).
         reindex: If True, include items whose model tag matches none of
             ``expected_model_tags`` (stale or never processed), and videos
-            missing ``expected_video_tag``.
+            missing ``expected_video_tag``. Otherwise only items labeled by
+            another model or with other frame settings are relabeled, up to
+            ``outdated_photo_limit`` photos and ``outdated_video_limit`` videos.
         expected_model_tags: Set of valid model tags (``m:<hash>``). An item
             is considered up-to-date if any of its keywords appears here.
     """
-    if reindex and not expected_model_tags:
-        raise ValueError("reindex=True requires expected_model_tags")
+    if not expected_model_tags:
+        raise ValueError("get_unprocessed_media requires expected_model_tags")
+    if not photo and not video:
+        return []
 
     from_date, to_date, date_range = _date_range(days_back, to_days)
     logger.debug(f"Querying media ({date_range})...")
-    recent = photosdb.photos(from_date=from_date, to_date=to_date)
+    recent = photosdb.photos(
+        images=photo, movies=video, from_date=from_date, to_date=to_date
+    )
     logger.debug(f"Found {len(recent)} items in date range")
 
     skip_uuids = metrics.get_permanent_failure_uuids()
@@ -133,36 +149,27 @@ def get_unprocessed_media(
         logger.debug(f"Skipping {len(skip_uuids)} item(s) with permanent failures")
 
     if reindex:
-        tags = expected_model_tags or set()
-        # Include items whose model tag is missing or not in the pool's tag set.
         items = [
             p
             for p in recent
             if not p.hidden
             and p.uuid not in skip_uuids
-            and _needs_reindex(p, tags, expected_video_tag)
+            and _needs_reindex(p, expected_model_tags, expected_video_tag)
         ]
     else:
-        # Filter: unlabeled, not hidden, not a known-permanent failure
         items = [
             p
             for p in recent
             if is_unlabeled(p) and not p.hidden and p.uuid not in skip_uuids
         ]
-        items += _outdated_videos(
+        items += _outdated_items(
             recent,
             skip_uuids,
-            expected_video_tag if video else None,
+            expected_model_tags,
+            expected_video_tag,
+            outdated_photo_limit,
             outdated_video_limit,
         )
-
-    # Filter by media type
-    if photo and not video:
-        items = [p for p in items if p.isphoto]
-    elif video and not photo:
-        items = [p for p in items if not p.isphoto]
-    elif not photo and not video:
-        return []
 
     photo_count = sum(1 for p in items if p.isphoto)
     video_count = sum(1 for p in items if not p.isphoto)
