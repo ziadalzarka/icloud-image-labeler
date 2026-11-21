@@ -17,7 +17,7 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
   - `discovery.py` — osxphotos query for unprocessed media
   - `exporter.py` — HEIC-to-JPEG conversion, video frame extraction (ffmpeg)
   - `llm.py` — OpenAI-compatible LLM client, response parsing, retry
-  - `processor.py` — batch orchestration, parallel photos then sequential videos, error tracking
+  - `processor.py` — batch orchestration: photos then videos, each exported on the main thread and labeled and written in worker threads, error tracking
   - `transcriber.py` — optional mlx-whisper transcription of videos, called from video processing
   - `migrate.py` — `migrate normalize-keywords` and `migrate redo-transcripts` commands for existing libraries
   - `writer.py` — PhotoScript metadata writes with thread-safe locking
@@ -26,7 +26,7 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
 
 - `use_photos_export=True` always (not just for missing/iCloud-only files)
 - PhotoScript writes must be serialized (AppleScript is single-threaded) — `_write_lock` in `writer.py`
-- Photos processed in parallel, videos sequentially (separate phases in `processor.py`)
+- Exports run one at a time on the main thread (osxphotos SQLite is bound to it); LLM requests and the Photos write run in up to `threads` worker threads. Photos and videos are separate phases in `processor.py` (`_label_in_parallel`). A 429 from the LLM server is retried with backoff
 - Video frames are labeled `video_frame_batch` at a time, then a text-only request merges the batch labels (`label_video` in `llm.py`)
 - Videos get a `v:<hash>` keyword of `video_frames`/`video_frame_batch` next to the `m:` model tag. Normal runs relabel up to `OUTDATED_VIDEOS_PER_CYCLE` videos per cycle that have an `m:` tag but not the current `v:` tag (loop mode skips the sleep while more remain); `--reindex` takes all of them
 - The `reasoning_effort` config (per server or global) is sent with every request when set. When it's empty, photo and frame requests send none and the video merge request sends `reasoning_effort="none"` (thinking made it take 110-300s on a local Qwen); servers that reject the parameter get the request again without it

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 PLIST_NAME = "com.image-labeler.plist"
 PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / PLIST_NAME
 LOG_PATH = CONFIG_DIR / "daemon.log"
+EXIT_TIMEOUT_S = 150
 
 
 def _homebrew_opt_path(path: Path) -> str:
@@ -49,6 +50,7 @@ def _generate_plist() -> dict:
         "WorkingDirectory": working_dir,
         "RunAtLoad": True,
         "KeepAlive": True,
+        "ExitTimeOut": EXIT_TIMEOUT_S,
         "StandardOutPath": str(LOG_PATH),
         "StandardErrorPath": str(LOG_PATH),
         "EnvironmentVariables": {

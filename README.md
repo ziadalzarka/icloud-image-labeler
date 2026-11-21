@@ -16,7 +16,7 @@ Photos.app ──> Discovery ──> Export ──> LLM ──> Writer ──> P
 3. **LLM** — Sends images to an OpenAI-compatible API. Returns structured JSON with keywords, title, description, and OCR text. Video frames are sent in batches, and a final text-only request merges the batch results into one set of labels.
 4. **Writer** — Writes metadata back into Photos.app via PhotoScript (AppleScript automation).
 
-Photos are processed in parallel (configurable thread count), videos sequentially.
+Items are exported one at a time, and each one's LLM requests and Photos write run in worker threads (up to `threads` at once), so the next item exports while earlier ones are labeled. All photos go first, then videos. Requests that fail with a rate limit (429) are retried with backoff.
 
 ### Transcription (optional)
 
@@ -156,7 +156,7 @@ icloud-image-labeler run -v
 | `--base-url URL` | LLM API endpoint |
 | `--api-key KEY` | API key for LLM |
 | `--model NAME` | Model identifier |
-| `--threads N` | Parallel photo threads |
+| `--threads N` | Items labeled at once |
 | `--video-frames N` | Frames to extract per video |
 | `--video-frame-batch N` | Video frames per LLM request (0 = all in one) |
 | `--uuid UUID [...]` | Process specific photo UUIDs |
@@ -186,7 +186,7 @@ If no config exists when you run `icloud-image-labeler run`, the setup wizard la
 | `days` | `0` | Look back N days (0 = all time) |
 | `to_days` | `0` | Skip most recent N days |
 | `limit_per_cycle` | `0` | Items per cycle (0 = all) |
-| `threads` | `4` | Max parallel photo threads |
+| `threads` | `4` | Max items labeled at once |
 | `video_frames` | `30` | Frames to extract from videos |
 | `video_frame_batch` | `5` | Video frames per LLM request (0 = all in one) |
 | `max_dimension` | `1024` | Max image dimension sent to LLM (px) |
@@ -255,7 +255,7 @@ labeler/
   discovery.py  — osxphotos query for unprocessed media
   exporter.py   — photo export (HEIC/iCloud fallbacks), video frame extraction
   llm.py        — OpenAI-compatible client, JSON parsing, retry logic
-  processor.py  — batch orchestration, parallel photos + sequential videos
+  processor.py  — batch orchestration: export in turn, label and write in parallel
   transcriber.py — optional Whisper transcription of videos, used by video labeling
   migrate.py    — one-off keyword migrations (normalize-keywords)
   writer.py     — PhotoScript metadata writes (thread-safe)

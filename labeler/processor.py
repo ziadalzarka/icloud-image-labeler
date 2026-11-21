@@ -1,4 +1,4 @@
-"""Batch orchestration: parallel photo processing, sequential video processing."""
+"""Batch orchestration: items exported in turn, labeled and written in parallel."""
 
 import logging
 import threading
@@ -50,6 +50,7 @@ RETRY_BASE_DELAY = 5  # seconds
 RETRY_MAX_DELAY = 300  # seconds
 _HTTP_SERVER_ERROR = 500
 _HTTP_BAD_REQUEST = 400
+_HTTP_TOO_MANY_REQUESTS = 429
 _POLL_INTERVAL = 0.1  # seconds between checking futures
 _FUTURE_DRAIN_TIMEOUT = 5  # seconds to wait for remaining futures
 DEFAULT_REFRESH_INTERVAL = 21600  # seconds (6 hours)
@@ -66,6 +67,8 @@ def _is_retryable_error(exc: Exception) -> bool:
         return True
     if isinstance(exc, APIStatusError):
         if exc.status_code >= _HTTP_SERVER_ERROR:
+            return True
+        if exc.status_code == _HTTP_TOO_MANY_REQUESTS:
             return True
         # LM Studio model crash returns 400 with "crashed" in the message
         if exc.status_code == _HTTP_BAD_REQUEST and "crashed" in str(exc).lower():
@@ -136,7 +139,7 @@ class ItemFailureTracker:
         logger.warning(f"{filename} failed ({count}/{MAX_ITEM_FAILURES})")
 
 
-# --- Photo processing (export on main thread, LLM+write in worker) --------
+# --- Photos ----------------------------------------------------------------
 
 
 def _label_and_write_photo(
@@ -218,32 +221,20 @@ def _run_with_retry(item, media_type: str, pool: ServerPool, tracker, work):
                 pool.release(server)
 
 
-def _label_photo_with_retry(
-    item,
-    image_b64,
-    export_meta,
-    export_duration,
-    pool: ServerPool,
-    write,
-    tracker,
-):
-    _run_with_retry(
+def _export_photo(item: osxphotos.PhotoInfo, max_dimension: int, write: bool):
+    t_export = time.monotonic()
+    image_b64, export_meta = export_photo_as_base64(item, max_dimension=max_dimension)
+    return partial(
+        _label_and_write_photo,
         item,
-        "photo",
-        pool,
-        tracker,
-        partial(
-            _label_and_write_photo,
-            item,
-            image_b64,
-            export_meta,
-            export_duration,
-            write=write,
-        ),
+        image_b64,
+        export_meta,
+        time.monotonic() - t_export,
+        write=write,
     )
 
 
-# --- Video processing (fully on main thread) ------------------------------
+# --- Videos ----------------------------------------------------------------
 
 
 def _transcribe_or_none(
@@ -256,47 +247,37 @@ def _transcribe_or_none(
         return None
 
 
-def _process_single_video(
+@dataclass(frozen=True)
+class _ExportedVideo:
+    frames_b64: list[str]
+    meta: dict
+    export_duration: float
+    prepare_duration: float
+    transcript: Transcript | None
+
+
+def _label_and_write_video(
     item: osxphotos.PhotoInfo,
+    video: _ExportedVideo,
     server,
-    video_frames: int,
     video_frame_batch: int,
-    max_dimension: int,
-    whisper: Whisper | None,
+    video_tag: str,
     write: bool,
 ) -> None:
-    """Export frames, transcribe, label, write metadata, record metrics."""
     t_start = time.monotonic()
     client = create_client(server.base_url, api_key=server.api_key)
-    transcript = existing_transcript(item)
-
-    t_export = time.monotonic()
-    with exported_video(item) as video_path:
-        frames_b64, export_meta = video_frames_as_base64(
-            video_path,
-            item.original_filename,
-            num_frames=video_frames,
-            max_dimension=max_dimension,
-        )
-        export_duration = time.monotonic() - t_export
-        if frames_b64 and whisper and transcript is None:
-            transcript = _transcribe_or_none(
-                video_path, item.original_filename, whisper
-            )
-
-    if not frames_b64:
-        raise RuntimeError(f"No frames extracted from {item.original_filename}")
+    transcript = video.transcript
 
     logger.info(
         f"{_server_label(server)} Labeling video: "
-        f"{item.original_filename} ({len(frames_b64)} frames"
+        f"{item.original_filename} ({len(video.frames_b64)} frames"
         f"{', with transcript' if transcript and transcript.text else ''})"
     )
     t_llm = time.monotonic()
     labels, llm_retries, in_toks, out_toks = label_video(
         client,
         server.model,
-        frames_b64,
+        video.frames_b64,
         item.original_filename,
         batch_size=video_frame_batch,
         transcript=transcript.text if transcript else "",
@@ -310,7 +291,7 @@ def _process_single_video(
         labels,
         model=server.model,
         write=write,
-        video_tag=video_settings_tag(video_frames, video_frame_batch),
+        video_tag=video_tag,
         transcript_tag=transcript.keyword if transcript else None,
     )
     write_duration = time.monotonic() - t_write
@@ -321,14 +302,14 @@ def _process_single_video(
         media_type="video",
         is_icloud_only=item.ismissing,
         status="success",
-        export_duration_s=export_duration,
+        export_duration_s=video.export_duration,
         llm_duration_s=llm_duration,
         write_duration_s=write_duration,
-        total_duration_s=time.monotonic() - t_start,
-        image_size_bytes=export_meta.get("image_size_bytes"),
-        image_width=export_meta.get("image_width"),
-        image_height=export_meta.get("image_height"),
-        num_frames=export_meta.get("num_frames"),
+        total_duration_s=video.prepare_duration + time.monotonic() - t_start,
+        image_size_bytes=video.meta.get("image_size_bytes"),
+        image_width=video.meta.get("image_width"),
+        image_height=video.meta.get("image_height"),
+        num_frames=video.meta.get("num_frames"),
         llm_retries=llm_retries,
         keywords_count=len(labels.get("keywords", [])),
         has_ocr=bool(labels.get("ocr_text")),
@@ -339,30 +320,47 @@ def _process_single_video(
     )
 
 
-def _process_video_with_retry(
-    item,
-    pool: ServerPool,
-    video_frames,
-    video_frame_batch,
-    max_dimension,
-    whisper,
-    write,
-    tracker,
+def _export_video(
+    item: osxphotos.PhotoInfo,
+    video_frames: int,
+    video_frame_batch: int,
+    max_dimension: int,
+    whisper: Whisper | None,
+    write: bool,
 ):
-    _run_with_retry(
-        item,
-        "video",
-        pool,
-        tracker,
-        partial(
-            _process_single_video,
-            item,
-            video_frames=video_frames,
-            video_frame_batch=video_frame_batch,
+    t_start = time.monotonic()
+    transcript = existing_transcript(item)
+
+    with exported_video(item) as video_path:
+        frames_b64, export_meta = video_frames_as_base64(
+            video_path,
+            item.original_filename,
+            num_frames=video_frames,
             max_dimension=max_dimension,
-            whisper=whisper,
-            write=write,
-        ),
+        )
+        export_duration = time.monotonic() - t_start
+        if frames_b64 and whisper and transcript is None:
+            transcript = _transcribe_or_none(
+                video_path, item.original_filename, whisper
+            )
+
+    if not frames_b64:
+        raise RuntimeError(f"No frames extracted from {item.original_filename}")
+
+    video = _ExportedVideo(
+        frames_b64=frames_b64,
+        meta=export_meta,
+        export_duration=export_duration,
+        prepare_duration=time.monotonic() - t_start,
+        transcript=transcript,
+    )
+    return partial(
+        _label_and_write_video,
+        item,
+        video,
+        video_frame_batch=video_frame_batch,
+        video_tag=video_settings_tag(video_frames, video_frame_batch),
+        write=write,
     )
 
 
@@ -511,213 +509,112 @@ def _maybe_refresh(
 # --- Batch orchestration helpers --------------------------------------------
 
 
-def _collect_completed_futures(in_flight: dict, state: _BatchState) -> None:
-    """Drain done futures from in_flight, updating state counters."""
-    for fut in [f for f in in_flight if f.done()]:
-        photo = in_flight.pop(fut)
-        state.processed += 1
-        try:
-            fut.result()
-            state.photos_ok += 1
-            logger.info(
-                f"[{state.processed}/{state.total}] Done: "
-                f"{photo.original_filename} "
-                f"(added {_format_date(photo)})"
-            )
-        except MaxFailuresExceeded:
-            raise
-        except Exception as e:
-            state.photos_fail += 1
-            logger.error(
-                f"[{state.processed}/{state.total}] Failed: "
-                f"{photo.original_filename}: {e}"
-            )
-
-
-def _export_and_submit_photo(
-    photo,
-    executor,
-    in_flight,
-    state,
-    server_pool: ServerPool,
-    max_dimension,
-    write,
-    tracker,
-    discover_fn,
-    refresh_interval,
-    photo_idx,
-):
-    """Export one photo on the main thread and submit LLM+write to the pool."""
-    _maybe_refresh(
-        state,
-        discover_fn,
-        refresh_interval,
-        photo_insert_idx=photo_idx,
-        video_insert_idx=0,
-    )
-
-    try:
-        t_export = time.monotonic()
-        image_b64, export_meta = export_photo_as_base64(
-            photo, max_dimension=max_dimension
-        )
-        export_duration = time.monotonic() - t_export
-    except Exception as e:
-        state.processed += 1
+def _record_outcome(state: _BatchState, item: osxphotos.PhotoInfo, ok: bool) -> None:
+    if item.isphoto and ok:
+        state.photos_ok += 1
+    elif item.isphoto:
         state.photos_fail += 1
-        _record_error(photo, "photo", None, None, e)
-        logger.error(
-            f"[{state.processed}/{state.total}] Export failed: "
-            f"{photo.original_filename}: {e}"
-        )
-        tracker.record_failure(photo.uuid, photo.original_filename)
-        return
+    elif ok:
+        state.videos_ok += 1
+    else:
+        state.videos_fail += 1
 
-    fut = executor.submit(
-        _label_photo_with_retry,
-        photo,
-        image_b64,
-        export_meta,
-        export_duration,
-        server_pool,
-        write,
-        tracker,
+
+def _finish(fut, item, state: _BatchState, timeout: float | None = None) -> None:
+    state.processed += 1
+    try:
+        fut.result(timeout=timeout)
+    except MaxFailuresExceeded:
+        raise
+    except Exception as e:
+        _record_outcome(state, item, ok=False)
+        logger.error(
+            f"[{state.processed}/{state.total}] Failed: {item.original_filename}: {e}"
+        )
+        return
+    _record_outcome(state, item, ok=True)
+    logger.info(
+        f"[{state.processed}/{state.total}] Done: "
+        f"{item.original_filename} (added {_format_date(item)})"
     )
-    in_flight[fut] = photo
+
+
+def _collect_completed_futures(in_flight: dict, state: _BatchState) -> None:
+    for fut in [f for f in in_flight if f.done()]:
+        _finish(fut, in_flight.pop(fut), state)
 
 
 def _drain_remaining_futures(in_flight: dict, state: _BatchState) -> None:
-    """Drain in-flight futures after the main photo loop exits."""
     if is_shutting_down():
         for fut in in_flight:
             fut.cancel()
-    for fut in list(in_flight):
-        photo = in_flight[fut]
-        if fut.cancelled():
-            continue
+    for fut, item in list(in_flight.items()):
+        if not fut.cancelled():
+            _finish(fut, item, state, timeout=_FUTURE_DRAIN_TIMEOUT)
+
+
+def _export_or_fail(item, media_type: str, export, state: _BatchState, tracker):
+    try:
+        return export(item)
+    except Exception as e:
         state.processed += 1
-        try:
-            fut.result(timeout=_FUTURE_DRAIN_TIMEOUT)
-            state.photos_ok += 1
-            logger.info(
-                f"[{state.processed}/{state.total}] Done: "
-                f"{photo.original_filename} "
-                f"(added {_format_date(photo)})"
-            )
-        except MaxFailuresExceeded:
-            raise
-        except Exception as e:
-            state.photos_fail += 1
-            logger.error(
-                f"[{state.processed}/{state.total}] Failed: "
-                f"{photo.original_filename}: {e}"
-            )
+        _record_outcome(state, item, ok=False)
+        _record_error(item, media_type, None, None, e)
+        logger.error(
+            f"[{state.processed}/{state.total}] Export failed: "
+            f"{item.original_filename}: {e}"
+        )
+        tracker.record_failure(item.uuid, item.original_filename)
+        return None
 
 
-def _process_photos_parallel(
-    state,
+def _insert_positions(state: _BatchState, media_type: str, idx: int) -> dict:
+    if media_type == "photo":
+        return {"photo_insert_idx": idx, "video_insert_idx": 0}
+    return {"photo_insert_idx": len(state.photos), "video_insert_idx": idx}
+
+
+def _label_in_parallel(
+    state: _BatchState,
+    media_type: str,
+    export,
     server_pool: ServerPool,
-    max_dimension,
-    write,
     tracker,
     discover_fn,
     refresh_interval,
 ):
-    """Process photos: export on main thread, LLM+write in worker threads."""
+    items = state.photos if media_type == "photo" else state.videos
     total_threads = server_pool.total_threads
     executor = ThreadPoolExecutor(max_workers=total_threads)
-    in_flight: dict = {}  # future -> PhotoInfo
-    photo_idx = 0
+    in_flight: dict = {}
+    idx = 0
     try:
-        while (photo_idx < len(state.photos) or in_flight) and not is_shutting_down():
+        while (idx < len(items) or in_flight) and not is_shutting_down():
             _collect_completed_futures(in_flight, state)
-
-            # Backpressure: wait if all worker slots are busy
-            if photo_idx < len(state.photos) and len(in_flight) >= total_threads:
+            if idx >= len(items) or len(in_flight) >= total_threads:
                 time.sleep(_POLL_INTERVAL)
                 continue
 
-            # Drain remaining futures
-            if photo_idx >= len(state.photos):
-                time.sleep(_POLL_INTERVAL)
-                continue
-
-            photo = state.photos[photo_idx]
-            photo_idx += 1
-
-            _export_and_submit_photo(
-                photo,
-                executor,
-                in_flight,
+            item = items[idx]
+            idx += 1
+            _maybe_refresh(
                 state,
-                server_pool,
-                max_dimension,
-                write,
-                tracker,
                 discover_fn,
                 refresh_interval,
-                photo_idx,
+                **_insert_positions(state, media_type, idx),
             )
+            work = _export_or_fail(item, media_type, export, state, tracker)
+            if work is not None:
+                fut = executor.submit(
+                    _run_with_retry, item, media_type, server_pool, tracker, work
+                )
+                in_flight[fut] = item
 
         _drain_remaining_futures(in_flight, state)
     finally:
         executor.shutdown(
             wait=not is_shutting_down(), cancel_futures=is_shutting_down()
         )
-
-
-def _process_videos_sequential(
-    state,
-    server_pool: ServerPool,
-    video_frames,
-    video_frame_batch,
-    max_dimension,
-    whisper,
-    write,
-    tracker,
-    discover_fn,
-    refresh_interval,
-):
-    """Process videos sequentially on the main thread."""
-    video_idx = 0
-    while video_idx < len(state.videos) and not is_shutting_down():
-        video = state.videos[video_idx]
-        video_idx += 1
-        state.processed += 1
-
-        _maybe_refresh(
-            state,
-            discover_fn,
-            refresh_interval,
-            photo_insert_idx=len(state.photos),
-            video_insert_idx=video_idx,
-        )
-
-        try:
-            _process_video_with_retry(
-                video,
-                server_pool,
-                video_frames,
-                video_frame_batch,
-                max_dimension,
-                whisper,
-                write,
-                tracker,
-            )
-            state.videos_ok += 1
-            logger.info(
-                f"[{state.processed}/{state.total}] Done: "
-                f"{video.original_filename} "
-                f"(added {_format_date(video)})"
-            )
-        except MaxFailuresExceeded:
-            raise
-        except Exception as e:
-            state.videos_fail += 1
-            logger.error(
-                f"[{state.processed}/{state.total}] Failed: "
-                f"{video.original_filename}: {e}"
-            )
 
 
 def _add_transcripts_sequential(
@@ -760,15 +657,16 @@ def process_batch(
     whisper: Whisper | None = None,
     untranscribed: list[osxphotos.PhotoInfo] | None = None,
 ) -> int:
-    """Process a batch of media: photos in parallel, then videos sequentially.
+    """Process a batch of media: photos, then videos.
 
-    With ``whisper`` set, videos are transcribed before labeling so the
-    labels can use what is said. ``untranscribed`` are labeled videos with no
+    Exports happen one at a time on the main thread (osxphotos uses SQLite
+    which is bound to the creating thread), then LLM + write run in worker
+    threads, so the next item exports while earlier ones are labeled.
+
+    With ``whisper`` set, videos are transcribed after export so the labels
+    can use what is said. ``untranscribed`` are labeled videos with no
     transcript yet: they are transcribed and their labels updated with the
     transcript in a text-only request, after the other videos.
-
-    Photo exports happen on the main thread (osxphotos uses SQLite which is
-    bound to the creating thread), then LLM + write run in worker threads.
 
     If discover_fn is provided, the main thread will call it every
     refresh_interval seconds to pick up newly added items.
@@ -776,6 +674,8 @@ def process_batch(
     LLM calls are distributed round-robin across ``server_pool``, with each
     server limited to its own ``threads`` slot count. On retry a fresh server
     is selected so a crashed backend rotates away.
+
+    Returns the number of items labeled.
     """
     state = _init_batch(items, untranscribed or [])
     tracker = ItemFailureTracker()
@@ -802,11 +702,11 @@ def process_batch(
             f"(up to {total_threads} threads across {len(server_pool)} server(s): "
             f"{breakdown})..."
         )
-        _process_photos_parallel(
+        _label_in_parallel(
             state,
+            "photo",
+            partial(_export_photo, max_dimension=max_dimension, write=write),
             server_pool,
-            max_dimension,
-            write,
             tracker,
             discover_fn,
             refresh_interval,
@@ -816,15 +716,22 @@ def process_batch(
         logger.info("Shutdown requested, stopping batch processing.")
 
     if state.videos:
-        logger.info(f"Processing {len(state.videos)} videos sequentially...")
-        _process_videos_sequential(
+        logger.info(
+            f"Processing {len(state.videos)} videos "
+            f"(up to {total_threads} at a time)..."
+        )
+        _label_in_parallel(
             state,
+            "video",
+            partial(
+                _export_video,
+                video_frames=video_frames,
+                video_frame_batch=video_frame_batch,
+                max_dimension=max_dimension,
+                whisper=whisper,
+                write=write,
+            ),
             server_pool,
-            video_frames,
-            video_frame_batch,
-            max_dimension,
-            whisper,
-            write,
             tracker,
             discover_fn,
             refresh_interval,
@@ -843,4 +750,4 @@ def process_batch(
         photos_failed=state.photos_fail,
         videos_failed=state.videos_fail,
     )
-    return state.videos_ok
+    return state.photos_ok + state.videos_ok
