@@ -1,16 +1,19 @@
 """launchd Launch Agent lifecycle management."""
 
 import logging
+import os
 import plistlib
 import subprocess
 import sys
 from pathlib import Path
 
+from labeler import pause as pause_file
 from labeler.config import CONFIG_DIR
 
 logger = logging.getLogger(__name__)
 
-PLIST_NAME = "com.image-labeler.plist"
+LABEL = "com.image-labeler"
+PLIST_NAME = f"{LABEL}.plist"
 PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / PLIST_NAME
 LOG_PATH = CONFIG_DIR / "daemon.log"
 EXIT_TIMEOUT_S = 150
@@ -39,7 +42,7 @@ def _get_labeler_module_path() -> str:
 def _generate_plist() -> dict:
     working_dir = _get_labeler_module_path()
     return {
-        "Label": "com.image-labeler",
+        "Label": LABEL,
         "ProgramArguments": [
             _get_python_path(),
             "-m",
@@ -67,6 +70,7 @@ def start():
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    pause_file.resume()
 
     plist = _generate_plist()
     with PLIST_PATH.open("wb") as f:
@@ -95,10 +99,59 @@ def restart():
 
 def status():
     """Print whether the Launch Agent is currently running."""
-    if is_running():
-        print("Daemon is running.")
-    else:
+    if not is_running():
         print("Daemon is not running.")
+        return
+    since = pause_file.paused_since()
+    if since is None:
+        print("Daemon is running.")
+        return
+    print(
+        f"Daemon is paused since {pause_file.clock_time(since)}. It stops at "
+        f"{pause_file.clock_time(pause_file.stops_at(since))} unless you run "
+        "'icloud-image-labeler daemon resume'."
+    )
+
+
+def pause():
+    pause_file.pause()
+    stops_at = pause_file.stops_at(pause_file.paused_since())
+    print(
+        "Paused. Requests already sent to the LLM finish, but nothing new is "
+        "exported or written to Photos."
+    )
+    print(
+        "Run 'icloud-image-labeler daemon resume' before "
+        f"{pause_file.clock_time(stops_at)}, or the daemon stops and stays stopped."
+    )
+
+
+def resume():
+    if not pause_file.is_paused():
+        print("Not paused.")
+        return
+    expired = pause_file.has_expired()
+    pause_file.resume()
+    if expired:
+        print(
+            "The pause went past an hour, so the daemon stopped. Start it again "
+            "with 'icloud-image-labeler daemon start'."
+        )
+    else:
+        print("Resumed.")
+
+
+def is_this_process() -> bool:
+    return os.environ.get("XPC_SERVICE_NAME") == LABEL
+
+
+def remove_from_launchd():
+    logger.info(
+        "Removing the launch agent, so the daemon doesn't start again until "
+        "'icloud-image-labeler daemon start'"
+    )
+    PLIST_PATH.unlink(missing_ok=True)
+    subprocess.run(["launchctl", "remove", LABEL], check=False)
 
 
 def is_running() -> bool:
@@ -108,4 +161,4 @@ def is_running() -> bool:
         capture_output=True,
         text=True,
     )
-    return "com.image-labeler" in result.stdout
+    return LABEL in result.stdout

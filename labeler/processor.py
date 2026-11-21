@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 import osxphotos
 from openai import APIConnectionError, APIStatusError, APITimeoutError
 
-from labeler import metrics
+from labeler import metrics, pause
 from labeler.exporter import (
     export_photo_as_base64,
     exported_video,
@@ -201,6 +201,8 @@ def _run_with_retry(item, media_type: str, pool: ServerPool, tracker, work):
         try:
             work(server)
             return
+        except pause.StoppedWhilePausedError:
+            raise
         except Exception as e:
             if _is_retryable_error(e):
                 pool.release(server)
@@ -592,7 +594,11 @@ def _label_in_parallel(
     try:
         while (idx < len(items) or in_flight) and not is_shutting_down():
             _collect_completed_futures(in_flight, state)
-            if idx >= len(items) or len(in_flight) >= total_threads:
+            if (
+                idx >= len(items)
+                or len(in_flight) >= total_threads
+                or pause.is_paused()
+            ):
                 time.sleep(_POLL_INTERVAL)
                 continue
 
@@ -629,6 +635,7 @@ def _add_transcripts_sequential(
         return
     total = len(state.untranscribed)
     for position, video in enumerate(state.untranscribed, start=1):
+        pause.wait_while_paused()
         if is_shutting_down():
             return
         progress = f"[transcript {position}/{total}]"

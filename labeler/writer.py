@@ -4,9 +4,11 @@ import logging
 import re
 import subprocess
 import threading
+from contextlib import contextmanager
 
 import photoscript
 
+from labeler import pause
 from labeler.llm import model_tag
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,15 @@ def _ensure_photos_app():
         import time
 
         time.sleep(PHOTOS_APP_STARTUP_WAIT)
+
+
+@contextmanager
+def _photos_write():
+    pause.wait_until_photos_can_be_used()
+    _ensure_photos_app()
+    with _write_lock:
+        pause.wait_until_photos_can_be_used()
+        yield
 
 
 def _transcript_keywords(keywords: list[str]) -> list[str]:
@@ -77,8 +88,6 @@ def write_metadata(
         _log_dry_run(labels, [tag, video_tag, transcript_tag])
         return
 
-    _ensure_photos_app()
-
     keywords = list(labels.get("keywords", []))
     if labels.get("ocr_text"):
         keywords.append(f"{OCR_TAG_PREFIX}{labels['ocr_text']}")
@@ -86,7 +95,7 @@ def write_metadata(
     if video_tag:
         keywords.append(video_tag)
 
-    with _write_lock:
+    with _photos_write():
         logger.debug("Writing metadata to Photos.app...")
         photo = photoscript.Photo(photo_uuid)
         transcript = (
@@ -105,9 +114,7 @@ def write_labels_with_transcript(
         _log_dry_run({**labels, "ocr_text": ""}, [transcript_tag])
         return
 
-    _ensure_photos_app()
-
-    with _write_lock:
+    with _photos_write():
         photo = photoscript.Photo(photo_uuid)
         tags = [k for k in photo.keywords if k.startswith(LABEL_TAG_PREFIXES)]
         photo.keywords = normalize_keywords(
@@ -122,9 +129,7 @@ def write_transcript(photo_uuid: str, keyword: str, write: bool = True):
         logger.info(f"[DRY RUN] Would write keyword: {normalize_keyword(keyword)}")
         return
 
-    _ensure_photos_app()
-
-    with _write_lock:
+    with _photos_write():
         photo = photoscript.Photo(photo_uuid)
         other = [k for k in photo.keywords if not k.startswith(TRANSCRIPT_TAG_PREFIX)]
         photo.keywords = normalize_keywords([*other, keyword])

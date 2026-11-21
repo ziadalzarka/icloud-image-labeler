@@ -7,7 +7,7 @@ import logging
 import sys
 from importlib.metadata import version
 
-from labeler import config, daemon, metrics, migrate
+from labeler import config, daemon, metrics, migrate, pause
 from labeler.checks import check_dependencies
 from labeler.discovery import (
     get_unprocessed_media,
@@ -19,7 +19,7 @@ from labeler.init import run_init
 from labeler.llm import Server, ServerPool, video_settings_tag
 from labeler.processor import process_batch
 from labeler.shutdown import install_handlers as install_signal_handlers
-from labeler.shutdown import is_shutting_down
+from labeler.shutdown import is_shutting_down, request_stop
 from labeler.shutdown import wait as shutdown_wait
 from labeler.transcriber import INSTALL_HINT, Whisper, parse_languages
 from labeler.transcriber import is_available as transcription_available
@@ -179,6 +179,13 @@ def _untranscribed_limit(limit: int) -> int:
     return UNTRANSCRIBED_VIDEOS_PER_CYCLE
 
 
+def _stop_after_pause():
+    if daemon.is_this_process():
+        daemon.remove_from_launchd()
+    else:
+        request_stop()
+
+
 def _run(args, cfg):
     """One-shot or loop processing."""
     rc = _resolve_config(args, cfg)
@@ -241,6 +248,8 @@ def _run(args, cfg):
         )
         return items, untranscribed
 
+    pause.clear_if_expired()
+    pause.watch(_stop_after_pause)
     try:
         _label_loop(args, rc, pool, whisper, discover)
     except KeyboardInterrupt:
@@ -249,6 +258,9 @@ def _run(args, cfg):
 
 def _label_loop(args, rc, pool, whisper, discover):
     while not is_shutting_down():
+        if pause.is_paused():
+            pause.wait_while_paused()
+            continue
         keep_running, more_backlog = _process_one_cycle(
             args, rc, pool, whisper, discover
         )
@@ -355,6 +367,10 @@ def _daemon_cmd(args):
         daemon.restart()
     elif action == "status":
         daemon.status()
+    elif action == "pause":
+        daemon.pause()
+    elif action == "resume":
+        daemon.resume()
     else:
         print(f"Unknown daemon action: {action}")
         sys.exit(1)
@@ -538,7 +554,7 @@ def _build_parser():
     daemon_parser = subparsers.add_parser("daemon", help="Manage background daemon")
     daemon_parser.add_argument(
         "daemon_action",
-        choices=["start", "stop", "restart", "status"],
+        choices=["start", "stop", "restart", "status", "pause", "resume"],
     )
 
     config_parser = subparsers.add_parser("config", help="Manage configuration")

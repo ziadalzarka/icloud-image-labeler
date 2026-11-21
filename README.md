@@ -240,12 +240,16 @@ Run as a background service that auto-starts on login via macOS Launch Agent:
 
 ```sh
 icloud-image-labeler daemon start     # Install and start Launch Agent
-icloud-image-labeler daemon status    # Check if running
+icloud-image-labeler daemon status    # Check if running or paused
+icloud-image-labeler daemon pause     # Leave Photos alone for a while
+icloud-image-labeler daemon resume    # Carry on after a pause
 icloud-image-labeler daemon restart   # Apply config changes
 icloud-image-labeler daemon stop      # Uninstall Launch Agent
 ```
 
 The daemon runs as `com.image-labeler` under `~/Library/LaunchAgents/`. It auto-restarts on crash and starts on login. Logs go to `~/.image-labeler/daemon.log`.
+
+Photos.app is slow to respond while the labeler writes to it. `daemon pause` stops all exports and writes, so you can use Photos. Requests already sent to the LLM finish, and their results are written after `daemon resume`. If you don't resume within an hour, the daemon stops for good. It removes its Launch Agent and stays stopped, even after a login, until you run `daemon start`. Running `daemon pause` again restarts the hour. A labeler started with `run` also pauses.
 
 ## Metrics
 
@@ -277,6 +281,7 @@ labeler/
   writer.py     — PhotoScript metadata writes (thread-safe)
   metrics.py    — SQLite metrics recording
   daemon.py     — macOS Launch Agent lifecycle
+  pause.py      — pausing exports and writes, and stopping after an hour paused
   shutdown.py   — graceful shutdown (SIGINT/SIGTERM handling)
   checks.py     — pre-flight dependency checks (ffmpeg, Photos.app)
 ```
