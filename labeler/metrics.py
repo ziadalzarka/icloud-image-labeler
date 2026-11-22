@@ -103,6 +103,10 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, col_type: 
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
 
+def read(sql: str, params: tuple = ()) -> list[tuple]:
+    return _get_conn().execute(sql, params).fetchall()
+
+
 def get_permanent_failure_uuids() -> set[str]:
     """Return UUIDs whose last attempt hit a known-unrecoverable error.
 

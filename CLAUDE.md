@@ -13,7 +13,9 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
 - `labeler/` — main package, run with `python -m labeler`
   - `cli.py` — argparse CLI with `run`, `daemon`, `config`, `migrate` subcommands
   - `config.py` — `~/.image-labeler/config.json` management
-  - `daemon.py` — launchd Launch Agent lifecycle, `daemon pause`/`resume`
+  - `daemon.py` — launchd Launch Agent lifecycle, `daemon pause`/`resume`, `daemon status`
+  - `report.py` — builds the `daemon status` report: what's in flight and batch progress come from the tail of `daemon.log` (metrics only hold finished items), speed, averages, curve, models and errors from `metrics.db`, and the library split from `library.json`
+  - `library.py` — `discover()` saves `~/.image-labeler/library.json` each cycle: photos and videos per `m:` tag, unlabeled, and videos on other frame settings (loading Photos takes minutes, so `daemon status` reads this file and never loads the library itself)
   - `pause.py` — the `~/.image-labeler/paused` file, waiting while it exists, and the thread that stops the labeler after an hour paused
   - `discovery.py` — osxphotos query for unprocessed media
   - `exporter.py` — PhotoKit requests for smaller photo and video versions, Photos export fallback with HEIC-to-JPEG conversion, video frame extraction (ffmpeg)

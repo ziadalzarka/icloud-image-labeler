@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from labeler import pause as pause_file
+from labeler import report
 from labeler.config import CONFIG_DIR
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,8 @@ def status():
             f"at {pause_file.clock_time(found.stops_at)} unless you run "
             "'icloud-image-labeler daemon resume'."
         )
+    print()
+    print(report.build(LOG_PATH))
 
 
 def pause(minutes: int | None = None):
