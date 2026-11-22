@@ -222,6 +222,7 @@ def _run(args, cfg):
 
     def discover():
         photosdb = load_photos_db()
+        library.remember_models(pool.models())
         library.save_summary(photosdb, expected_tags, expected_video_tag)
         items = get_unprocessed_media(
             photosdb,

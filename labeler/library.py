@@ -4,10 +4,12 @@ import time
 from collections import Counter
 
 from labeler.config import CONFIG_DIR
+from labeler.llm import model_tag
 
 logger = logging.getLogger(__name__)
 
 SNAPSHOT_PATH = CONFIG_DIR / "library.json"
+MODEL_NAMES_PATH = CONFIG_DIR / "model-tags.json"
 MODEL_TAG_PREFIX = "m:"
 
 
@@ -66,6 +68,25 @@ def save_summary(photosdb, current_tags: set[str], video_tag: str | None) -> Non
         save(summarize(photosdb, current_tags, video_tag))
     except Exception as e:
         logger.warning(f"Couldn't save the library summary: {e}")
+
+
+def known_model_names() -> dict[str, str]:
+    try:
+        return json.loads(MODEL_NAMES_PATH.read_text())
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def remember_models(names) -> dict[str, str]:
+    known = known_model_names()
+    found = {model_tag(name): name for name in names if name}
+    merged = {**known, **found}
+    if merged != known:
+        MODEL_NAMES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        written = MODEL_NAMES_PATH.with_name(f"{MODEL_NAMES_PATH.name}.new")
+        written.write_text(json.dumps(merged, indent=2, sort_keys=True))
+        written.replace(MODEL_NAMES_PATH)
+    return merged
 
 
 def load() -> dict | None:

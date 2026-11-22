@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from labeler import config, library, metrics
-from labeler.llm import model_tag
 
 TAIL_BYTES = 2_000_000
 STALE_IN_FLIGHT_S = 3600
@@ -217,7 +216,7 @@ def _model_names() -> dict[str, str]:
         )
     }
     names |= {s["model"] for s in config.resolve_servers(config.load_config())}
-    return {model_tag(name): name for name in names if name}
+    return library.remember_models(names)
 
 
 def now_section(state: LogState, run: tuple | None) -> list[str]:
