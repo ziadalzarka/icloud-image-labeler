@@ -14,9 +14,12 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 from labeler import metrics, pause
 from labeler.exporter import (
+    PhotoKitPrefetch,
     export_photo_as_base64,
     exported_video,
+    photo_prefetch,
     video_frames_as_base64,
+    video_prefetch,
 )
 from labeler.llm import (
     ServerPool,
@@ -55,6 +58,9 @@ _HTTP_TOO_MANY_REQUESTS = 429
 _POLL_INTERVAL = 0.1  # seconds between checking futures
 _FUTURE_DRAIN_TIMEOUT = 5  # seconds to wait for remaining futures
 DEFAULT_REFRESH_INTERVAL = 21600  # seconds (6 hours)
+PHOTO_PREFETCH = 32
+VIDEO_PREFETCH = 4
+WORKERS_PER_LLM_SLOT = 4
 
 
 class MaxFailuresExceeded(RuntimeError):
@@ -143,15 +149,15 @@ class ItemFailureTracker:
 # --- Photos ----------------------------------------------------------------
 
 
-def _label_and_write_photo(
+def _label_photo(
     item: osxphotos.PhotoInfo,
     image_b64: str,
     export_meta: dict,
     export_duration: float,
     server,
     write: bool,
-) -> None:
-    """LLM label + write metadata for an already-exported photo."""
+):
+    """LLM label an already-exported photo; returns the step that writes it."""
     t_start = time.monotonic()
     client = create_client(server.base_url, api_key=server.api_key)
 
@@ -166,69 +172,89 @@ def _label_and_write_photo(
     )
     llm_duration = time.monotonic() - t_llm
 
-    t_write = time.monotonic()
-    write_metadata(item.uuid, labels, model=server.model, write=write)
-    write_duration = time.monotonic() - t_write
+    def write_step():
+        t_write = time.monotonic()
+        write_metadata(item.uuid, labels, model=server.model, write=write)
+        write_duration = time.monotonic() - t_write
 
-    metrics.record_item(
-        uuid=item.uuid,
-        filename=item.original_filename,
-        media_type="photo",
-        is_icloud_only=item.ismissing,
-        status="success",
-        export_duration_s=export_duration,
-        llm_duration_s=llm_duration,
-        write_duration_s=write_duration,
-        total_duration_s=export_duration + (time.monotonic() - t_start),
-        image_size_bytes=export_meta.get("image_size_bytes"),
-        image_width=export_meta.get("image_width"),
-        image_height=export_meta.get("image_height"),
-        llm_retries=llm_retries,
-        keywords_count=len(labels.get("keywords", [])),
-        has_ocr=bool(labels.get("ocr_text")),
-        model=server.model,
-        server=_server_tag(server),
-        input_tokens=in_toks,
-        output_tokens=out_toks,
-    )
+        metrics.record_item(
+            uuid=item.uuid,
+            filename=item.original_filename,
+            media_type="photo",
+            is_icloud_only=item.ismissing,
+            status="success",
+            export_duration_s=export_duration,
+            llm_duration_s=llm_duration,
+            write_duration_s=write_duration,
+            total_duration_s=export_duration + (time.monotonic() - t_start),
+            image_size_bytes=export_meta.get("image_size_bytes"),
+            image_width=export_meta.get("image_width"),
+            image_height=export_meta.get("image_height"),
+            llm_retries=llm_retries,
+            keywords_count=len(labels.get("keywords", [])),
+            has_ocr=bool(labels.get("ocr_text")),
+            model=server.model,
+            server=_server_tag(server),
+            input_tokens=in_toks,
+            output_tokens=out_toks,
+        )
+
+    return write_step
 
 
-def _run_with_retry(item, media_type: str, pool: ServerPool, tracker, work):
+def _fail(item, media_type: str, tracker, server, error: Exception) -> None:
+    tracker.record_failure(item.uuid, item.original_filename)
+    _record_error(item, media_type, server.model, _server_tag(server), error)
+
+
+def _label_with_retry(item, media_type: str, pool: ServerPool, tracker, work):
     attempt = 0
     while True:
         server = pool.acquire()
-        released = False
         try:
-            work(server)
-            return
+            return server, work(server)
         except pause.StoppedWhilePausedError:
             raise
         except Exception as e:
-            if _is_retryable_error(e):
-                pool.release(server)
-                released = True
-                delay = _retry_delay(attempt)
-                attempt += 1
-                logger.warning(
-                    f"Retryable error on {server.base_url} "
-                    f"(attempt {attempt}): {e}. Retrying in {delay}s..."
-                )
-                if shutdown_wait(delay):
-                    raise
-                continue
-            tracker.record_failure(item.uuid, item.original_filename)
-            _record_error(item, media_type, server.model, _server_tag(server), e)
-            raise
+            if not _is_retryable_error(e):
+                _fail(item, media_type, tracker, server, e)
+                raise
+            error = e
         finally:
-            if not released:
-                pool.release(server)
+            pool.release(server)
+        delay = _retry_delay(attempt)
+        attempt += 1
+        logger.warning(
+            f"Retryable error on {server.base_url} "
+            f"(attempt {attempt}): {error}. Retrying in {delay}s..."
+        )
+        if shutdown_wait(delay):
+            raise error
 
 
-def _export_photo(item: osxphotos.PhotoInfo, max_dimension: int, write: bool):
+def _run_with_retry(item, media_type: str, pool: ServerPool, tracker, work):
+    server, write_step = _label_with_retry(item, media_type, pool, tracker, work)
+    try:
+        write_step()
+    except pause.StoppedWhilePausedError:
+        raise
+    except Exception as e:
+        _fail(item, media_type, tracker, server, e)
+        raise
+
+
+def _export_photo(
+    item: osxphotos.PhotoInfo,
+    max_dimension: int,
+    write: bool,
+    prefetch: PhotoKitPrefetch | None = None,
+):
     t_export = time.monotonic()
-    image_b64, export_meta = export_photo_as_base64(item, max_dimension=max_dimension)
+    image_b64, export_meta = export_photo_as_base64(
+        item, max_dimension=max_dimension, prefetch=prefetch
+    )
     return partial(
-        _label_and_write_photo,
+        _label_photo,
         item,
         image_b64,
         export_meta,
@@ -259,14 +285,14 @@ class _ExportedVideo:
     transcript: Transcript | None
 
 
-def _label_and_write_video(
+def _label_video(
     item: osxphotos.PhotoInfo,
     video: _ExportedVideo,
     server,
     video_frame_batch: int,
     video_tag: str,
     write: bool,
-) -> None:
+):
     t_start = time.monotonic()
     client = create_client(server.base_url, api_key=server.api_key)
     transcript = video.transcript
@@ -288,39 +314,42 @@ def _label_and_write_video(
     )
     llm_duration = time.monotonic() - t_llm
 
-    t_write = time.monotonic()
-    write_metadata(
-        item.uuid,
-        labels,
-        model=server.model,
-        write=write,
-        video_tag=video_tag,
-        transcript_tag=transcript.keyword if transcript else None,
-    )
-    write_duration = time.monotonic() - t_write
+    def write_step():
+        t_write = time.monotonic()
+        write_metadata(
+            item.uuid,
+            labels,
+            model=server.model,
+            write=write,
+            video_tag=video_tag,
+            transcript_tag=transcript.keyword if transcript else None,
+        )
+        write_duration = time.monotonic() - t_write
 
-    metrics.record_item(
-        uuid=item.uuid,
-        filename=item.original_filename,
-        media_type="video",
-        is_icloud_only=item.ismissing,
-        status="success",
-        export_duration_s=video.export_duration,
-        llm_duration_s=llm_duration,
-        write_duration_s=write_duration,
-        total_duration_s=video.prepare_duration + time.monotonic() - t_start,
-        image_size_bytes=video.meta.get("image_size_bytes"),
-        image_width=video.meta.get("image_width"),
-        image_height=video.meta.get("image_height"),
-        num_frames=video.meta.get("num_frames"),
-        llm_retries=llm_retries,
-        keywords_count=len(labels.get("keywords", [])),
-        has_ocr=bool(labels.get("ocr_text")),
-        model=server.model,
-        server=_server_tag(server),
-        input_tokens=in_toks,
-        output_tokens=out_toks,
-    )
+        metrics.record_item(
+            uuid=item.uuid,
+            filename=item.original_filename,
+            media_type="video",
+            is_icloud_only=item.ismissing,
+            status="success",
+            export_duration_s=video.export_duration,
+            llm_duration_s=llm_duration,
+            write_duration_s=write_duration,
+            total_duration_s=video.prepare_duration + time.monotonic() - t_start,
+            image_size_bytes=video.meta.get("image_size_bytes"),
+            image_width=video.meta.get("image_width"),
+            image_height=video.meta.get("image_height"),
+            num_frames=video.meta.get("num_frames"),
+            llm_retries=llm_retries,
+            keywords_count=len(labels.get("keywords", [])),
+            has_ocr=bool(labels.get("ocr_text")),
+            model=server.model,
+            server=_server_tag(server),
+            input_tokens=in_toks,
+            output_tokens=out_toks,
+        )
+
+    return write_step
 
 
 def _export_video(
@@ -330,11 +359,12 @@ def _export_video(
     max_dimension: int,
     whisper: Whisper | None,
     write: bool,
+    prefetch: PhotoKitPrefetch | None = None,
 ):
     t_start = time.monotonic()
     transcript = existing_transcript(item)
 
-    with exported_video(item) as video_path:
+    with exported_video(item, prefetch) as video_path:
         frames_b64, export_meta = video_frames_as_base64(
             video_path,
             item.original_filename,
@@ -358,7 +388,7 @@ def _export_video(
         transcript=transcript,
     )
     return partial(
-        _label_and_write_video,
+        _label_video,
         item,
         video,
         video_frame_batch=video_frame_batch,
@@ -388,16 +418,13 @@ def _current_labels(item: osxphotos.PhotoInfo) -> dict:
     }
 
 
-def _add_transcript(
-    item: osxphotos.PhotoInfo, server, whisper: Whisper, write: bool
-) -> None:
+def _add_transcript(item: osxphotos.PhotoInfo, server, whisper: Whisper, write: bool):
     t_start = time.monotonic()
     with exported_video(item) as video_path:
         export_duration = time.monotonic() - t_start
         transcript = transcribe_video(video_path, item.original_filename, whisper)
     if not transcript.text:
-        write_transcript(item.uuid, transcript.keyword, write=write)
-        return
+        return partial(write_transcript, item.uuid, transcript.keyword, write=write)
 
     logger.info(
         f"{_server_label(server)} Adding transcript to labels: {item.original_filename}"
@@ -413,27 +440,30 @@ def _add_transcript(
     )
     llm_duration = time.monotonic() - t_llm
 
-    t_write = time.monotonic()
-    write_labels_with_transcript(item.uuid, labels, transcript.keyword, write=write)
-    write_duration = time.monotonic() - t_write
+    def write_step():
+        t_write = time.monotonic()
+        write_labels_with_transcript(item.uuid, labels, transcript.keyword, write=write)
+        write_duration = time.monotonic() - t_write
 
-    metrics.record_item(
-        uuid=item.uuid,
-        filename=item.original_filename,
-        media_type="transcript",
-        is_icloud_only=item.ismissing,
-        status="success",
-        export_duration_s=export_duration,
-        llm_duration_s=llm_duration,
-        write_duration_s=write_duration,
-        total_duration_s=time.monotonic() - t_start,
-        llm_retries=llm_retries,
-        keywords_count=len(labels.get("keywords", [])),
-        model=server.model,
-        server=_server_tag(server),
-        input_tokens=in_toks,
-        output_tokens=out_toks,
-    )
+        metrics.record_item(
+            uuid=item.uuid,
+            filename=item.original_filename,
+            media_type="transcript",
+            is_icloud_only=item.ismissing,
+            status="success",
+            export_duration_s=export_duration,
+            llm_duration_s=llm_duration,
+            write_duration_s=write_duration,
+            total_duration_s=time.monotonic() - t_start,
+            llm_retries=llm_retries,
+            keywords_count=len(labels.get("keywords", [])),
+            model=server.model,
+            server=_server_tag(server),
+            input_tokens=in_toks,
+            output_tokens=out_toks,
+        )
+
+    return write_step
 
 
 # --- Batch state and helpers ------------------------------------------------
@@ -585,24 +615,24 @@ def _label_in_parallel(
     tracker,
     discover_fn,
     refresh_interval,
+    prefetch: tuple[PhotoKitPrefetch, int] | None = None,
 ):
     items = state.photos if media_type == "photo" else state.videos
-    total_threads = server_pool.total_threads
-    executor = ThreadPoolExecutor(max_workers=total_threads)
+    workers = server_pool.total_threads * WORKERS_PER_LLM_SLOT
+    executor = ThreadPoolExecutor(max_workers=workers)
     in_flight: dict = {}
     idx = 0
     try:
         while (idx < len(items) or in_flight) and not is_shutting_down():
             _collect_completed_futures(in_flight, state)
-            if (
-                idx >= len(items)
-                or len(in_flight) >= total_threads
-                or pause.is_paused()
-            ):
+            if idx >= len(items) or len(in_flight) >= workers or pause.is_paused():
                 time.sleep(_POLL_INTERVAL)
                 continue
 
             item = items[idx]
+            if prefetch:
+                downloads, depth = prefetch
+                downloads.start(items[idx : idx + depth])
             idx += 1
             _maybe_refresh(
                 state,
@@ -619,6 +649,8 @@ def _label_in_parallel(
 
         _drain_remaining_futures(in_flight, state)
     finally:
+        if prefetch:
+            prefetch[0].cancel()
         executor.shutdown(
             wait=not is_shutting_down(), cancel_futures=is_shutting_down()
         )
@@ -716,14 +748,21 @@ def process_batch(
             f"(up to {total_threads} threads across {len(server_pool)} server(s): "
             f"{breakdown})..."
         )
+        photos = photo_prefetch(max_dimension)
         _label_in_parallel(
             state,
             "photo",
-            partial(_export_photo, max_dimension=max_dimension, write=write),
+            partial(
+                _export_photo,
+                max_dimension=max_dimension,
+                write=write,
+                prefetch=photos,
+            ),
             server_pool,
             tracker,
             discover_fn,
             refresh_interval,
+            prefetch=(photos, PHOTO_PREFETCH),
         )
 
     if is_shutting_down():
@@ -734,6 +773,7 @@ def process_batch(
             f"Processing {len(state.videos)} videos "
             f"(up to {total_threads} at a time)..."
         )
+        videos = video_prefetch()
         _label_in_parallel(
             state,
             "video",
@@ -744,11 +784,13 @@ def process_batch(
                 max_dimension=max_dimension,
                 whisper=whisper,
                 write=write,
+                prefetch=videos,
             ),
             server_pool,
             tracker,
             discover_fn,
             refresh_interval,
+            prefetch=(videos, VIDEO_PREFETCH),
         )
 
     if state.untranscribed and whisper and not is_shutting_down():

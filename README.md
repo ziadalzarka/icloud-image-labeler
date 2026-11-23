@@ -11,7 +11,7 @@ Photos.app ──> Discovery ──> Export ──> LLM ──> Writer ──> P
                (osxphotos)   (Pillow)   (API)   (PhotoScript)
 ```
 
-1. **Discovery** — Queries the Photos library for media with no keywords set, filtered by date range and media type. Items this tool labeled with another model, and videos it labeled with other frame settings, are relabeled too, newest first, up to 500 photos and 50 videos per cycle; while more remain, the next cycle starts right away instead of waiting for the poll interval.
+1. **Discovery** — Queries the Photos library for media with no keywords set, filtered by date range and media type. Items this tool labeled with another model, and videos it labeled with other frame settings, are relabeled too, newest first, up to 2,000 photos and 200 videos per cycle; while more remain, the next cycle starts right away instead of waiting for the poll interval.
 2. **Export** — Gets each photo from Photos at `max_dimension` as JPEG and each video at 720p (exporting the original when Photos can't), then extracts frames from videos via ffmpeg (evenly spaced, at most 2 per second).
 3. **LLM** — Sends images to an OpenAI-compatible API. Returns structured JSON with keywords, title, description, and OCR text. Video frames are sent in batches, and a final text-only request merges the batch results into one set of labels.
 4. **Writer** — Writes metadata back into Photos.app via PhotoScript (AppleScript automation).

@@ -1,14 +1,20 @@
-"""PhotoScript metadata writes to macOS Photos.app."""
+"""Metadata writes to macOS Photos: PhotoKit for keywords and title, Photos.app
+for the description."""
 
 import logging
+import queue
 import re
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 
-import photoscript
-from photoscript.exceptions import AppleScriptError
+import objc
+import Photos
+from applescript import AppleScript, ScriptError
+from Foundation import NSSet
 from photoscript.script_loader import configure_run_script
 
 from labeler import pause
@@ -24,6 +30,8 @@ PHOTOS_APP_STARTUP_WAIT = 3  # seconds to wait for Photos.app to start
 PHOTOS_HUNG_AFTER_S = 60
 PHOTOS_QUIT_TIMEOUT_S = 15
 PHOTOS_RESTART_WAIT_S = 30
+PHOTO_ID_SUFFIX = "/L0/001"
+PHOTOKIT_BATCH_SIZE = 128
 
 TRANSCRIPT_TAG_PREFIX = "trans:"
 NO_AUDIO_TAG = f"{TRANSCRIPT_TAG_PREFIX}no-audio"
@@ -33,6 +41,46 @@ LABEL_TAG_PREFIXES = ("m:", "v:", OCR_TAG_PREFIX)
 
 _DIGIT_COMMA_RE = re.compile(r"(?<=\d),(?=\d)")
 _COMMA_RE = re.compile(r"\s*(?:,\s*)+")
+
+_PHOTOS_SCRIPT_SOURCE = """
+on setLabels(itemId, theKeywords, theTitle, theDescription)
+	tell application "Photos"
+		set theItem to media item id itemId
+		set keywords of theItem to theKeywords
+		set name of theItem to theTitle
+	end tell
+	setDescription(itemId, theDescription)
+end setLabels
+
+on setKeywords(itemId, theKeywords)
+	tell application "Photos"
+		set keywords of media item id itemId to theKeywords
+	end tell
+end setKeywords
+
+on setDescription(itemId, theDescription)
+	tell application "Photos"
+		set theItem to media item id itemId
+		repeat 3 times
+			set description of theItem to theDescription
+			if theDescription is "" then return
+			if description of theItem is theDescription then return
+		end repeat
+	end tell
+end setDescription
+
+on getKeywords(itemId)
+	tell application "Photos"
+		set theKeywords to keywords of media item id itemId
+	end tell
+	if theKeywords is missing value then return {}
+	return theKeywords
+end getKeywords
+"""
+
+_photos_script: AppleScript | None = None
+
+Keep = Callable[[str], bool]
 
 
 def _ensure_photos_app():
@@ -60,8 +108,15 @@ def _photos_write():
         yield
 
 
+def _script() -> AppleScript:
+    global _photos_script
+    if _photos_script is None:
+        _photos_script = AppleScript(source=_PHOTOS_SCRIPT_SOURCE)
+    return _photos_script
+
+
 def _update_photo(photo_uuid: str, update):
-    with _photos_write():
+    with _photos_write(), objc.autorelease_pool():
         try:
             _run_update(photo_uuid, update)
         except PhotosNotRespondingError:
@@ -72,11 +127,11 @@ def _update_photo(photo_uuid: str, update):
 def _run_update(photo_uuid: str, update):
     started = time.monotonic()
     try:
-        update(photoscript.Photo(photo_uuid))
-    except (ValueError, AppleScriptError) as e:
+        update(f"{photo_uuid}{PHOTO_ID_SUFFIX}")
+    except ScriptError as e:
         if time.monotonic() - started >= PHOTOS_HUNG_AFTER_S:
             raise PhotosNotRespondingError from e
-        raise
+        raise RuntimeError(f"Photos couldn't update {photo_uuid}: {e}") from e
 
 
 def _restart_photos():
@@ -97,8 +152,170 @@ def _is_photos_running() -> bool:
     )
 
 
-def _transcript_keywords(keywords: list[str]) -> list[str]:
-    return [k for k in keywords if k.startswith(TRANSCRIPT_TAG_PREFIX)]
+def _text(labels: dict, key: str) -> str:
+    return (labels.get(key) or "").strip()
+
+
+def _starts_with(prefixes: tuple[str, ...]) -> Keep:
+    return lambda keyword: keyword.startswith(prefixes)
+
+
+def _keep_none(_keyword: str) -> bool:
+    return False
+
+
+def _photokit_asset(photo_uuid: str):
+    status = Photos.PHPhotoLibrary.authorizationStatusForAccessLevel_(
+        Photos.PHAccessLevelReadWrite
+    )
+    if status != Photos.PHAuthorizationStatusAuthorized:
+        return None
+    return Photos.PHAsset.fetchAssetsWithLocalIdentifiers_options_(
+        [f"{photo_uuid}{PHOTO_ID_SUFFIX}"], None
+    ).firstObject()
+
+
+def _photokit_keywords(asset) -> list[str]:
+    found = Photos.PHKeyword.fetchKeywordsForAsset_options_(asset, None)
+    return [found.objectAtIndex_(i).title() for i in range(found.count())]
+
+
+@dataclass
+class _Change:
+    asset: object
+    keywords: list[str]
+    title: str | None
+    saved: threading.Event = field(default_factory=threading.Event)
+    error: object = None
+
+
+class _PhotoKitSaver:
+    def __init__(self):
+        self._pending: queue.Queue[_Change] = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._start_lock = threading.Lock()
+
+    def save(self, asset, keywords: list[str], title: str | None) -> bool:
+        change = _Change(asset, keywords, title)
+        self._start()
+        self._pending.put(change)
+        change.saved.wait()
+        if change.error is None:
+            return True
+        logger.warning(
+            f"PhotoKit couldn't update {asset.localIdentifier()} "
+            f"({change.error}), writing it through Photos.app"
+        )
+        return False
+
+    def _start(self):
+        with self._start_lock:
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._run, name="photokit-saver", daemon=True
+                )
+                self._thread.start()
+
+    def _run(self):
+        while True:
+            batch = [self._pending.get()]
+            while len(batch) < PHOTOKIT_BATCH_SIZE:
+                try:
+                    batch.append(self._pending.get_nowait())
+                except queue.Empty:
+                    break
+            try:
+                with objc.autorelease_pool():
+                    self._save_batch(batch)
+            except Exception as e:
+                for change in batch:
+                    change.error = change.error or e
+            for change in batch:
+                change.saved.set()
+
+    def _save_batch(self, batch: list[_Change]):
+        if _perform_changes(batch) or len(batch) == 1:
+            return
+        for change in batch:
+            change.error = None
+            _perform_changes([change])
+
+
+def _perform_changes(batch: list[_Change]) -> bool:
+    def change_block():
+        for change in batch:
+            try:
+                request = Photos.PHAssetChangeRequest.changeRequestForAsset_(
+                    change.asset
+                )
+                request.setKeywordTitles_(NSSet.setWithArray_(change.keywords))
+                if change.title is not None:
+                    request.setTitle_(change.title)
+            except Exception as e:
+                change.error = e
+
+    library = Photos.PHPhotoLibrary.sharedPhotoLibrary()
+    done, error = library.performChangesAndWait_error_(change_block, None)
+    if done:
+        return True
+    for change in batch:
+        change.error = change.error or error
+    return False
+
+
+_photokit_saver = _PhotoKitSaver()
+
+
+def _write_with_photokit(
+    photo_uuid: str, keywords: list[str], keep: Keep, labels: dict | None
+) -> bool:
+    asset = _photokit_asset(photo_uuid)
+    if asset is None:
+        return False
+    try:
+        current = _photokit_keywords(asset)
+    except Exception as e:
+        logger.warning(f"PhotoKit couldn't read keywords of {photo_uuid}: {e}")
+        return False
+    merged = normalize_keywords([*keywords, *filter(keep, current)])
+    if labels is None:
+        pause.wait_until_photos_can_be_used()
+        return _photokit_saver.save(asset, merged, None)
+    description = _text(labels, "description")
+    _update_photo(
+        photo_uuid,
+        lambda item_id: _script().call("setDescription", item_id, description),
+    )
+    return _photokit_saver.save(asset, merged, _text(labels, "title"))
+
+
+def _write_with_applescript(
+    item_id: str, keywords: list[str], keep: Keep, labels: dict | None
+):
+    current = _script().call("getKeywords", item_id) or []
+    merged = normalize_keywords([*keywords, *filter(keep, current)])
+    if labels is None:
+        _script().call("setKeywords", item_id, merged)
+        return
+    _script().call(
+        "setLabels",
+        item_id,
+        merged,
+        _text(labels, "title"),
+        _text(labels, "description"),
+    )
+
+
+def _write(
+    photo_uuid: str, keywords: list[str], keep: Keep, labels: dict | None = None
+):
+    with objc.autorelease_pool():
+        if _write_with_photokit(photo_uuid, keywords, keep, labels):
+            return
+    _update_photo(
+        photo_uuid,
+        lambda item_id: _write_with_applescript(item_id, keywords, keep, labels),
+    )
 
 
 def normalize_keyword(keyword: str) -> str:
@@ -132,7 +349,7 @@ def write_metadata(
     video_tag: str | None = None,
     transcript_tag: str | None = None,
 ):
-    """Write keywords, title, and description to Photos.app."""
+    """Write keywords, title, and description to Photos."""
     tag = model_tag(model)
     if not write:
         _log_dry_run(labels, [tag, video_tag, transcript_tag])
@@ -144,17 +361,13 @@ def write_metadata(
     keywords.append(tag)
     if video_tag:
         keywords.append(video_tag)
+    if transcript_tag:
+        keywords.append(transcript_tag)
+    keywords = normalize_keywords(keywords)
+    keep = _keep_none if transcript_tag else _starts_with((TRANSCRIPT_TAG_PREFIX,))
 
-    def update(photo):
-        transcript = (
-            [transcript_tag] if transcript_tag else _transcript_keywords(photo.keywords)
-        )
-        photo.keywords = normalize_keywords(keywords + transcript)
-        photo.title = labels.get("title", "")
-        photo.description = labels.get("description", "")
-
-    logger.debug("Writing metadata to Photos.app...")
-    _update_photo(photo_uuid, update)
+    logger.debug("Writing metadata to Photos...")
+    _write(photo_uuid, keywords, keep, labels)
     logger.info(f"Written {len(keywords)} keywords, title, and description")
 
 
@@ -165,15 +378,8 @@ def write_labels_with_transcript(
         _log_dry_run({**labels, "ocr_text": ""}, [transcript_tag])
         return
 
-    def update(photo):
-        tags = [k for k in photo.keywords if k.startswith(LABEL_TAG_PREFIXES)]
-        photo.keywords = normalize_keywords(
-            [*labels.get("keywords", []), *tags, transcript_tag]
-        )
-        photo.title = labels.get("title", "")
-        photo.description = labels.get("description", "")
-
-    _update_photo(photo_uuid, update)
+    keywords = normalize_keywords([*labels.get("keywords", []), transcript_tag])
+    _write(photo_uuid, keywords, _starts_with(LABEL_TAG_PREFIXES), labels)
 
 
 def write_transcript(photo_uuid: str, keyword: str, write: bool = True):
@@ -181,8 +387,8 @@ def write_transcript(photo_uuid: str, keyword: str, write: bool = True):
         logger.info(f"[DRY RUN] Would write keyword: {normalize_keyword(keyword)}")
         return
 
-    def update(photo):
-        other = [k for k in photo.keywords if not k.startswith(TRANSCRIPT_TAG_PREFIX)]
-        photo.keywords = normalize_keywords([*other, keyword])
-
-    _update_photo(photo_uuid, update)
+    _write(
+        photo_uuid,
+        normalize_keywords([keyword]),
+        lambda k: not k.startswith(TRANSCRIPT_TAG_PREFIX),
+    )

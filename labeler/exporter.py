@@ -7,10 +7,13 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
+import objc
 import osxphotos
 import Photos
 from Foundation import NSDate, NSRunLoop
@@ -29,6 +32,7 @@ PHOTOS_APP_QUIT_TIMEOUT_S = 20
 PHOTOS_APP_STARTUP_WAIT_S = 10
 AUDIO_SAMPLE_RATE = 16000
 PHOTOKIT_POLL_S = 0.05
+FRAME_WORKERS = 8
 
 _photos_access_requested = threading.Event()
 
@@ -96,31 +100,66 @@ def _photokit_asset(photo):
     ).firstObject()
 
 
-def _wait_for_photokit(photo, start, timeout: float):
-    done = threading.Event()
-    result = []
+class _PhotoKitRequest:
+    def __init__(self, photo, start):
+        self._uuid = photo.uuid
+        self._done = threading.Event()
+        self._result = None
+        self._manager = Photos.PHImageManager.defaultManager()
+        self._id = start(self._manager, self._finish)
 
-    def finish(value):
-        result.append(value)
-        done.set()
+    def _finish(self, value):
+        self._result = value
+        self._done.set()
 
-    manager = Photos.PHImageManager.defaultManager()
-    request_id = start(manager, finish)
-    deadline = time.monotonic() + timeout
-    while not done.is_set():
-        if time.monotonic() > deadline:
-            manager.cancelImageRequest_(request_id)
-            logger.warning(f"Photos didn't return {photo.uuid} within {timeout:.0f}s")
-            return None
-        NSRunLoop.currentRunLoop().runUntilDate_(
-            NSDate.dateWithTimeIntervalSinceNow_(PHOTOKIT_POLL_S)
-        )
-    return result[0]
+    def wait(self, timeout: float):
+        deadline = time.monotonic() + timeout
+        while not self._done.is_set():
+            if time.monotonic() > deadline:
+                self.cancel()
+                logger.warning(
+                    f"Photos didn't return {self._uuid} within {timeout:.0f}s"
+                )
+                return None
+            NSRunLoop.currentRunLoop().runUntilDate_(
+                NSDate.dateWithTimeIntervalSinceNow_(PHOTOKIT_POLL_S)
+            )
+        return self._result
+
+    def cancel(self):
+        self._manager.cancelImageRequest_(self._id)
 
 
-def _photokit_image(photo, max_dimension: int):
-    from PIL import Image
+RequestFn = Callable[[osxphotos.PhotoInfo], "_PhotoKitRequest | None"]
 
+
+class PhotoKitPrefetch:
+    def __init__(self, request: RequestFn, timeout: float):
+        self._request = request
+        self._timeout = timeout
+        self._pending: dict[str, _PhotoKitRequest | None] = {}
+
+    def start(self, items: Iterable[osxphotos.PhotoInfo]) -> None:
+        with objc.autorelease_pool():
+            for item in items:
+                if item.uuid not in self._pending:
+                    self._pending[item.uuid] = self._request(item)
+
+    def take(self, item: osxphotos.PhotoInfo):
+        if item.uuid in self._pending:
+            request = self._pending.pop(item.uuid)
+        else:
+            request = self._request(item)
+        return request.wait(self._timeout) if request is not None else None
+
+    def cancel(self) -> None:
+        for request in self._pending.values():
+            if request is not None:
+                request.cancel()
+        self._pending.clear()
+
+
+def _image_request(photo, max_dimension: int) -> _PhotoKitRequest | None:
     asset = _photokit_asset(photo)
     if asset is None:
         return None
@@ -141,7 +180,20 @@ def _photokit_image(photo, max_dimension: int):
             lambda image, _info: finish(image),
         )
 
-    image = _wait_for_photokit(photo, start, PHOTO_EXPORT_TIMEOUT)
+    return _PhotoKitRequest(photo, start)
+
+
+def photo_prefetch(max_dimension: int) -> PhotoKitPrefetch:
+    return PhotoKitPrefetch(
+        lambda photo: _image_request(photo, max_dimension), PHOTO_EXPORT_TIMEOUT
+    )
+
+
+def _photokit_image(photo, max_dimension: int, prefetch: PhotoKitPrefetch | None):
+    from PIL import Image
+
+    prefetch = prefetch or photo_prefetch(max_dimension)
+    image = prefetch.take(photo)
     tiff = image.TIFFRepresentation() if image is not None else None
     if tiff is None:
         return None
@@ -214,12 +266,14 @@ def _encode_as_jpeg(img, max_dimension, tmpdir):
 
 
 def export_photo_as_base64(
-    photo: osxphotos.PhotoInfo, max_dimension: int = 1024
+    photo: osxphotos.PhotoInfo,
+    max_dimension: int = 1024,
+    prefetch: PhotoKitPrefetch | None = None,
 ) -> tuple[str, dict]:
     """Export photo as JPEG and return (base64_string, metadata_dict)."""
     logger.debug(f"Exporting photo (missing={photo.ismissing})...")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        img = _photokit_image(photo, max_dimension)
+    with tempfile.TemporaryDirectory() as tmpdir, objc.autorelease_pool():
+        img = _photokit_image(photo, max_dimension, prefetch)
         if img is None:
             export_path = _resolve_export_path(photo, tmpdir)
             img = _open_or_fallback(photo, export_path, tmpdir)
@@ -267,7 +321,7 @@ def _restart_photos_app():
     time.sleep(PHOTOS_APP_STARTUP_WAIT_S)
 
 
-def _medium_quality_video(photo) -> str | None:
+def _video_request(photo) -> _PhotoKitRequest | None:
     asset = _photokit_asset(photo)
     if asset is None:
         return None
@@ -282,14 +336,22 @@ def _medium_quality_video(photo) -> str | None:
             asset, options, lambda av_asset, _audio_mix, _info: finish(av_asset)
         )
 
-    av_asset = _wait_for_photokit(photo, start, VIDEO_EXPORT_TIMEOUT)
+    return _PhotoKitRequest(photo, start)
+
+
+def video_prefetch() -> PhotoKitPrefetch:
+    return PhotoKitPrefetch(_video_request, VIDEO_EXPORT_TIMEOUT)
+
+
+def _medium_quality_video(photo, prefetch: PhotoKitPrefetch | None):
+    av_asset = (prefetch or video_prefetch()).take(photo)
     if av_asset is None or not hasattr(av_asset, "URL"):
-        return None
+        return None, None
     url = av_asset.URL()
-    return url.path() if url.isFileURL() else None
+    return (url.path() if url.isFileURL() else None), av_asset
 
 
-def _resolve_video_path(photo, tmpdir):
+def _resolve_video_path(photo, tmpdir, prefetch: PhotoKitPrefetch | None = None):
     """Use Photos' 720p version of the video; otherwise export the original
     via Photos, falling back to the on-disk original.
 
@@ -298,9 +360,9 @@ def _resolve_video_path(photo, tmpdir):
     Validate the export produced a real video stream, otherwise fall back
     to ``photo.path``.
     """
-    medium = _medium_quality_video(photo)
+    medium, av_asset = _medium_quality_video(photo, prefetch)
     if medium and Path(medium).exists() and _has_video_stream(medium):
-        return medium
+        return medium, av_asset
 
     exported = photo.export(
         tmpdir, use_photos_export=True, timeout=VIDEO_EXPORT_TIMEOUT
@@ -315,7 +377,7 @@ def _resolve_video_path(photo, tmpdir):
             tmpdir, use_photos_export=True, timeout=VIDEO_EXPORT_TIMEOUT
         )
     if exported and _has_video_stream(exported[0]):
-        return exported[0]
+        return exported[0], None
 
     if exported:
         size = Path(exported[0]).stat().st_size
@@ -325,7 +387,7 @@ def _resolve_video_path(photo, tmpdir):
         )
 
     if photo.path and Path(photo.path).exists() and _has_video_stream(photo.path):
-        return photo.path
+        return photo.path, None
 
     raise RuntimeError(
         f"No usable video source for {photo.uuid} ({photo.original_filename}): "
@@ -365,7 +427,9 @@ def _get_video_duration(video_path, filename):
     return duration
 
 
-def _run_ffmpeg_extract(video_path, timestamp, frame_path, max_dimension, *, input_seek):
+def _run_ffmpeg_extract(
+    video_path, timestamp, frame_path, max_dimension, *, input_seek
+):
     """Run a single ffmpeg frame-extraction attempt.
 
     ``input_seek=True`` places ``-ss`` before ``-i`` (fast, keyframe-only).
@@ -430,13 +494,33 @@ def _extract_frame(video_path, timestamp, frame_path, max_dimension):
     return ok
 
 
+@dataclass(frozen=True)
+class _Frame:
+    b64: str
+    size: int
+    width: int
+    height: int
+
+
+def _capture_frame(video_path, ts, idx, max_dimension, tmpdir) -> _Frame | None:
+    from PIL import Image
+
+    frame_path = Path(tmpdir) / f"frame_{idx:02d}.jpg"
+    if not _extract_frame(video_path, ts, str(frame_path), max_dimension):
+        return None
+    data = frame_path.read_bytes()
+    with Image.open(frame_path) as img:
+        width, height = img.size
+    return _Frame(
+        b64=base64.standard_b64encode(data).decode("utf-8"),
+        size=len(data),
+        width=width,
+        height=height,
+    )
+
+
 def _extract_all_frames(video_path, num_frames, duration, max_dimension, tmpdir):
     """Extract evenly-spaced frames and return (base64_list, metadata_dict)."""
-    frames = []
-    total_frame_bytes = 0
-    frame_width = None
-    frame_height = None
-
     if duration < SHORT_VIDEO_THRESHOLD_S:
         timestamps = [0.0]
     else:
@@ -448,50 +532,40 @@ def _extract_all_frames(video_path, num_frames, duration, max_dimension, tmpdir)
             )
         timestamps = [duration * (i + 0.5) / count for i in range(count)]
 
-    def _try_capture(ts, idx):
-        nonlocal total_frame_bytes, frame_width, frame_height
-        frame_path = str(Path(tmpdir) / f"frame_{idx:02d}.jpg")
-        if not _extract_frame(video_path, ts, frame_path, max_dimension):
-            return False
-        frame_size = Path(frame_path).stat().st_size
-        total_frame_bytes += frame_size
-        if frame_width is None:
-            from PIL import Image
+    def capture(job):
+        idx, ts = job
+        frame = _capture_frame(video_path, ts, idx, max_dimension, tmpdir)
+        if frame is None:
+            logger.warning(f"Failed to extract frame {idx + 1}")
+        return frame
 
-            with Image.open(frame_path) as img:
-                frame_width, frame_height = img.size
-        with Path(frame_path).open("rb") as f:
-            frames.append(base64.standard_b64encode(f.read()).decode("utf-8"))
-        return True
-
-    for i, timestamp in enumerate(timestamps):
-        logger.debug(
-            f"Extracting frame {i + 1}/{len(timestamps)} at {timestamp:.2f}s..."
-        )
-        if not _try_capture(timestamp, i):
-            logger.warning(f"Failed to extract frame {i + 1}")
+    with ThreadPoolExecutor(max_workers=FRAME_WORKERS) as workers:
+        captured = [f for f in workers.map(capture, enumerate(timestamps)) if f]
 
     # Last-resort: some legacy containers (e.g. old .3gp clips) only decode
     # frame zero. If every seeked attempt failed, grab the very first frame.
-    if not frames and timestamps != [0.0]:
+    if not captured and timestamps != [0.0]:
         logger.info("All seeked extractions failed; retrying at t=0")
-        _try_capture(0.0, len(timestamps))
+        frame = _capture_frame(video_path, 0.0, len(timestamps), max_dimension, tmpdir)
+        captured = [frame] if frame else []
 
-    logger.debug(f"Extracted {len(frames)} frames")
+    logger.debug(f"Extracted {len(captured)} frames")
     meta = {
-        "image_size_bytes": total_frame_bytes,
-        "image_width": frame_width,
-        "image_height": frame_height,
-        "num_frames": len(frames),
+        "image_size_bytes": sum(f.size for f in captured),
+        "image_width": captured[0].width if captured else None,
+        "image_height": captured[0].height if captured else None,
+        "num_frames": len(captured),
     }
-    return frames, meta
+    return [f.b64 for f in captured], meta
 
 
 @contextmanager
-def exported_video(photo: osxphotos.PhotoInfo) -> Iterator[str]:
+def exported_video(
+    photo: osxphotos.PhotoInfo, prefetch: PhotoKitPrefetch | None = None
+) -> Iterator[str]:
     logger.debug(f"Exporting video (missing={photo.ismissing})...")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        video_path = _resolve_video_path(photo, tmpdir)
+    with objc.autorelease_pool(), tempfile.TemporaryDirectory() as tmpdir:
+        video_path, _av_asset = _resolve_video_path(photo, tmpdir, prefetch)
         size_mb = Path(video_path).stat().st_size / (1024 * 1024)
         logger.debug(f"Using {video_path} ({size_mb:.1f} MB)")
         yield video_path
