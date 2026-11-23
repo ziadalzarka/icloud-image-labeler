@@ -5,11 +5,13 @@ import logging
 import queue
 import re
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import objc
 import Photos
@@ -111,8 +113,28 @@ def _photos_write():
 def _script() -> AppleScript:
     global _photos_script
     if _photos_script is None:
-        _photos_script = AppleScript(source=_PHOTOS_SCRIPT_SOURCE)
+        _photos_script = _compiled_script()
     return _photos_script
+
+
+def _compiled_script() -> AppleScript:
+    with tempfile.TemporaryDirectory(prefix="image-labeler-") as tmpdir:
+        source = Path(tmpdir) / "photos.applescript"
+        compiled = Path(tmpdir) / "photos.scpt"
+        source.write_text(_PHOTOS_SCRIPT_SOURCE)
+        try:
+            subprocess.run(
+                ["osacompile", "-o", str(compiled), str(source)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=PHOTOS_HUNG_AFTER_S,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise PhotosNotRespondingError from e
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"osacompile failed: {e.stderr.strip()}") from e
+        return AppleScript(path=str(compiled))
 
 
 def _update_photo(photo_uuid: str, update):
