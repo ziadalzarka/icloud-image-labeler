@@ -37,6 +37,10 @@ FRAME_WORKERS = 8
 _photos_access_requested = threading.Event()
 
 
+class DownloadTimedOut(Exception):
+    pass
+
+
 def _resize_if_needed(img, max_dim: int):
     """Resize image so the longest side is at most max_dim pixels.
 
@@ -100,6 +104,12 @@ def _photokit_asset(photo):
     ).firstObject()
 
 
+def wait_for_photokit() -> None:
+    NSRunLoop.currentRunLoop().runUntilDate_(
+        NSDate.dateWithTimeIntervalSinceNow_(PHOTOKIT_POLL_S)
+    )
+
+
 class _PhotoKitRequest:
     def __init__(self, photo, start):
         self._uuid = photo.uuid
@@ -112,18 +122,20 @@ class _PhotoKitRequest:
         self._result = value
         self._done.set()
 
-    def wait(self, timeout: float):
+    @property
+    def done(self) -> bool:
+        return self._done.is_set()
+
+    def wait(self, timeout: float, waited: float = 0.0):
         deadline = time.monotonic() + timeout
         while not self._done.is_set():
-            if time.monotonic() > deadline:
+            wait_for_photokit()
+            if not self._done.is_set() and time.monotonic() > deadline:
                 self.cancel()
                 logger.warning(
-                    f"Photos didn't return {self._uuid} within {timeout:.0f}s"
+                    f"Photos didn't return {self._uuid} within {timeout + waited:.0f}s"
                 )
-                return None
-            NSRunLoop.currentRunLoop().runUntilDate_(
-                NSDate.dateWithTimeIntervalSinceNow_(PHOTOKIT_POLL_S)
-            )
+                raise DownloadTimedOut(self._uuid)
         return self._result
 
     def cancel(self):
@@ -138,6 +150,7 @@ class PhotoKitPrefetch:
         self._request = request
         self._timeout = timeout
         self._pending: dict[str, _PhotoKitRequest | None] = {}
+        self._first_waited: dict[str, float] = {}
 
     def start(self, items: Iterable[osxphotos.PhotoInfo]) -> None:
         with objc.autorelease_pool():
@@ -145,18 +158,34 @@ class PhotoKitPrefetch:
                 if item.uuid not in self._pending:
                     self._pending[item.uuid] = self._request(item)
 
+    def next_ready(self, window: list[osxphotos.PhotoInfo]) -> int | None:
+        self.start(window)
+        now = time.monotonic()
+        self._first_waited.setdefault(window[0].uuid, now)
+        for position, item in enumerate(window):
+            request = self._pending.get(item.uuid)
+            waited = now - self._first_waited.get(item.uuid, now)
+            if request is None or request.done or waited >= self._timeout:
+                return position
+        return None
+
     def take(self, item: osxphotos.PhotoInfo):
         if item.uuid in self._pending:
             request = self._pending.pop(item.uuid)
         else:
             request = self._request(item)
-        return request.wait(self._timeout) if request is not None else None
+        first = self._first_waited.pop(item.uuid, None)
+        if request is None:
+            return None
+        waited = time.monotonic() - first if first is not None else 0.0
+        return request.wait(max(self._timeout - waited, 0.0), waited)
 
     def cancel(self) -> None:
         for request in self._pending.values():
             if request is not None:
                 request.cancel()
         self._pending.clear()
+        self._first_waited.clear()
 
 
 def _image_request(photo, max_dimension: int) -> _PhotoKitRequest | None:
@@ -193,7 +222,10 @@ def _photokit_image(photo, max_dimension: int, prefetch: PhotoKitPrefetch | None
     from PIL import Image
 
     prefetch = prefetch or photo_prefetch(max_dimension)
-    image = prefetch.take(photo)
+    try:
+        image = prefetch.take(photo)
+    except DownloadTimedOut:
+        return None
     tiff = image.TIFFRepresentation() if image is not None else None
     if tiff is None:
         return None
@@ -344,7 +376,15 @@ def video_prefetch() -> PhotoKitPrefetch:
 
 
 def _medium_quality_video(photo, prefetch: PhotoKitPrefetch | None):
-    av_asset = (prefetch or video_prefetch()).take(photo)
+    try:
+        av_asset = (prefetch or video_prefetch()).take(photo)
+    except DownloadTimedOut:
+        if photo.ismissing:
+            raise RuntimeError(
+                f"iCloud didn't send {photo.original_filename} within "
+                f"{VIDEO_EXPORT_TIMEOUT}s; it is tried again next cycle"
+            ) from None
+        return None, None
     if av_asset is None or not hasattr(av_asset, "URL"):
         return None, None
     url = av_asset.URL()

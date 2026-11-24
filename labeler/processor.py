@@ -20,6 +20,7 @@ from labeler.exporter import (
     photo_prefetch,
     video_frames_as_base64,
     video_prefetch,
+    wait_for_photokit,
 )
 from labeler.llm import (
     ServerPool,
@@ -607,6 +608,21 @@ def _insert_positions(state: _BatchState, media_type: str, idx: int) -> dict:
     return {"photo_insert_idx": len(state.photos), "video_insert_idx": idx}
 
 
+def _bring_ready_item_forward(
+    items: list, idx: int, downloads: PhotoKitPrefetch, depth: int
+) -> bool:
+    position = downloads.next_ready(items[idx : idx + depth])
+    if position is None:
+        return False
+    if position:
+        items.insert(idx, items.pop(idx + position))
+        logger.debug(
+            f"{items[idx + 1].original_filename} is still downloading; "
+            f"{items[idx].original_filename} goes first"
+        )
+    return True
+
+
 def _label_in_parallel(
     state: _BatchState,
     media_type: str,
@@ -629,10 +645,11 @@ def _label_in_parallel(
                 time.sleep(_POLL_INTERVAL)
                 continue
 
+            if prefetch and not _bring_ready_item_forward(items, idx, *prefetch):
+                wait_for_photokit()
+                continue
+
             item = items[idx]
-            if prefetch:
-                downloads, depth = prefetch
-                downloads.start(items[idx : idx + depth])
             idx += 1
             _maybe_refresh(
                 state,
