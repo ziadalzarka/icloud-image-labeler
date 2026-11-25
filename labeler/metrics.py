@@ -9,6 +9,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 DB_PATH = str(Path.home() / ".image-labeler" / "metrics.db")
+BUSY_TIMEOUT_S = 60
 
 # Error-message substrings that indicate an item will fail again on every
 # subsequent run (no video stream, corrupt MP4 atoms, etc.). Discovery uses
@@ -23,7 +24,7 @@ def _get_conn() -> sqlite3.Connection:
     """Get a thread-local database connection."""
     if not hasattr(_local, "conn") or _local.conn is None:
         Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-        _local.conn = sqlite3.connect(DB_PATH)
+        _local.conn = sqlite3.connect(DB_PATH, timeout=BUSY_TIMEOUT_S)
         _local.conn.execute("PRAGMA journal_mode=WAL")
     return _local.conn
 
@@ -153,6 +154,41 @@ def record_item(
 ):
     """Record metrics for a single processed item (upserts by uuid)."""
     conn = _get_conn()
+    try:
+        _upsert_item(
+            conn,
+            (
+                uuid,
+                filename,
+                media_type,
+                int(is_icloud_only),
+                status,
+                error_message,
+                export_duration_s,
+                llm_duration_s,
+                write_duration_s,
+                total_duration_s,
+                image_size_bytes,
+                image_width,
+                image_height,
+                num_frames,
+                llm_retries,
+                keywords_count,
+                int(has_ocr),
+                model,
+                server,
+                input_tokens,
+                output_tokens,
+                int(content_filtered),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+    except sqlite3.OperationalError as e:
+        conn.rollback()
+        logger.warning(f"Couldn't save the {status} row for {filename}: {e}")
+
+
+def _upsert_item(conn: sqlite3.Connection, values: tuple):
     conn.execute(
         """INSERT INTO item_metrics (
             uuid, filename, media_type, is_icloud_only, status, error_message,
@@ -184,31 +220,7 @@ def record_item(
             output_tokens=excluded.output_tokens,
             content_filtered=excluded.content_filtered,
             timestamp=excluded.timestamp""",
-        (
-            uuid,
-            filename,
-            media_type,
-            int(is_icloud_only),
-            status,
-            error_message,
-            export_duration_s,
-            llm_duration_s,
-            write_duration_s,
-            total_duration_s,
-            image_size_bytes,
-            image_width,
-            image_height,
-            num_frames,
-            llm_retries,
-            keywords_count,
-            int(has_ocr),
-            model,
-            server,
-            input_tokens,
-            output_tokens,
-            int(content_filtered),
-            datetime.now(timezone.utc).isoformat(),
-        ),
+        values,
     )
     conn.commit()
 
