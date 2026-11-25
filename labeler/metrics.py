@@ -55,6 +55,7 @@ def init_db():
             server TEXT,
             input_tokens INTEGER,
             output_tokens INTEGER,
+            content_filtered INTEGER NOT NULL DEFAULT 0,
             timestamp TEXT NOT NULL
         );
 
@@ -90,6 +91,9 @@ def init_db():
     _ensure_column(conn, "item_metrics", "server", "TEXT")
     _ensure_column(conn, "item_metrics", "input_tokens", "INTEGER")
     _ensure_column(conn, "item_metrics", "output_tokens", "INTEGER")
+    _ensure_column(
+        conn, "item_metrics", "content_filtered", "INTEGER NOT NULL DEFAULT 0"
+    )
     _ensure_column(conn, "run_metrics", "servers", "TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_item_server ON item_metrics(server)")
     conn.commit()
@@ -110,11 +114,15 @@ def read(sql: str, params: tuple = ()) -> list[tuple]:
 def get_permanent_failure_uuids() -> set[str]:
     """Return UUIDs whose last attempt hit a known-unrecoverable error.
 
-    See ``PERMANENT_FAILURE_PATTERNS`` for the allowlist of substrings.
+    See ``PERMANENT_FAILURE_PATTERNS`` for the allowlist of substrings. Items
+    the content filter blocked are skipped too.
     """
     conn = _get_conn()
     clauses = " OR ".join("error_message LIKE ?" for _ in PERMANENT_FAILURE_PATTERNS)
-    sql = f"SELECT uuid FROM item_metrics WHERE status='error' AND ({clauses})"
+    sql = (
+        "SELECT uuid FROM item_metrics WHERE status='error' "
+        f"AND (content_filtered=1 OR {clauses})"
+    )
     params = [f"%{p}%" for p in PERMANENT_FAILURE_PATTERNS]
     return {row[0] for row in conn.execute(sql, params)}
 
@@ -141,6 +149,7 @@ def record_item(
     server: str | None = None,
     input_tokens: int | None = None,
     output_tokens: int | None = None,
+    content_filtered: bool = False,
 ):
     """Record metrics for a single processed item (upserts by uuid)."""
     conn = _get_conn()
@@ -150,8 +159,8 @@ def record_item(
             export_duration_s, llm_duration_s, write_duration_s, total_duration_s,
             image_size_bytes, image_width, image_height, num_frames,
             llm_retries, keywords_count, has_ocr, model, server,
-            input_tokens, output_tokens, timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            input_tokens, output_tokens, content_filtered, timestamp
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(uuid) DO UPDATE SET
             filename=excluded.filename,
             media_type=excluded.media_type,
@@ -173,6 +182,7 @@ def record_item(
             server=excluded.server,
             input_tokens=excluded.input_tokens,
             output_tokens=excluded.output_tokens,
+            content_filtered=excluded.content_filtered,
             timestamp=excluded.timestamp""",
         (
             uuid,
@@ -196,6 +206,7 @@ def record_item(
             server,
             input_tokens,
             output_tokens,
+            int(content_filtered),
             datetime.now(timezone.utc).isoformat(),
         ),
     )

@@ -365,13 +365,26 @@ def models_section() -> list[str]:
     return lines
 
 
+def _content_filter_line() -> list[str]:
+    labeled, blocked = metrics.read(
+        "SELECT COALESCE(SUM(status='success'), 0), COALESCE(SUM(status='error'), 0) "
+        "FROM item_metrics WHERE content_filtered=1"
+    )[0]
+    if not labeled and not blocked:
+        return []
+    return [
+        f"  Content filter: {labeled:,} labeled without copied text, "
+        f"{blocked:,} blocked and not retried"
+    ]
+
+
 def errors_section() -> list[str]:
     day = _since(timedelta(hours=24))
     count = metrics.read(
         "SELECT COUNT(*) FROM item_metrics WHERE status='error' AND timestamp >= ?",
         (day,),
     )[0][0]
-    lines = ["ERRORS"]
+    lines = ["ERRORS", *_content_filter_line()]
     if not count:
         return [*lines, "  None in the last 24h"]
     lines.append(f"  {count} in the last 24h. Latest:")

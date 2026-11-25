@@ -23,6 +23,7 @@ from labeler.exporter import (
     wait_for_photokit,
 )
 from labeler.llm import (
+    ContentFilteredError,
     ServerPool,
     add_transcript_to_labels,
     create_client,
@@ -122,6 +123,7 @@ def _record_error(
         error_message=str(error),
         model=model,
         server=server,
+        content_filtered=isinstance(error, ContentFilteredError),
     )
 
 
@@ -164,7 +166,7 @@ def _label_photo(
 
     logger.info(f"{_server_label(server)} Labeling photo: {item.original_filename}")
     t_llm = time.monotonic()
-    labels, llm_retries, in_toks, out_toks = label_photo(
+    labels, llm_retries, in_toks, out_toks, content_filtered = label_photo(
         client,
         server.model,
         image_b64,
@@ -198,6 +200,7 @@ def _label_photo(
             server=_server_tag(server),
             input_tokens=in_toks,
             output_tokens=out_toks,
+            content_filtered=content_filtered,
         )
 
     return write_step
@@ -304,7 +307,7 @@ def _label_video(
         f"{', with transcript' if transcript and transcript.text else ''})"
     )
     t_llm = time.monotonic()
-    labels, llm_retries, in_toks, out_toks = label_video(
+    labels, llm_retries, in_toks, out_toks, content_filtered = label_video(
         client,
         server.model,
         video.frames_b64,
@@ -348,6 +351,7 @@ def _label_video(
             server=_server_tag(server),
             input_tokens=in_toks,
             output_tokens=out_toks,
+            content_filtered=content_filtered,
         )
 
     return write_step
@@ -432,7 +436,7 @@ def _add_transcript(item: osxphotos.PhotoInfo, server, whisper: Whisper, write: 
     )
     client = create_client(server.base_url, api_key=server.api_key)
     t_llm = time.monotonic()
-    labels, llm_retries, in_toks, out_toks = add_transcript_to_labels(
+    labels, llm_retries, in_toks, out_toks, content_filtered = add_transcript_to_labels(
         client,
         server.model,
         _current_labels(item),
@@ -462,6 +466,7 @@ def _add_transcript(item: osxphotos.PhotoInfo, server, whisper: Whisper, write: 
             server=_server_tag(server),
             input_tokens=in_toks,
             output_tokens=out_toks,
+            content_filtered=content_filtered,
         )
 
     return write_step

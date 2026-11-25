@@ -7,6 +7,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from openai import BadRequestError, OpenAI
 
@@ -82,6 +83,29 @@ Respond ONLY with valid JSON in this exact format:
 }"""
 
 MAX_TRANSCRIPT_CHARS = 3000
+
+CONTENT_FILTER_FINISH_REASON = "content_filter"
+CONTENT_FILTER_ERROR = (
+    "Blocked by the server's content filter, even when asked again without copied text"
+)
+WITHOUT_COPIED_TEXT_PROMPT = (
+    "Your last answer was cut off by a content filter, most likely because it "
+    "copied text word for word, such as song lyrics or a page of a book. Answer "
+    'again with "ocr_text" set to an empty string, and don\'t quote that text in '
+    "the keywords, title or description either."
+)
+
+
+class ContentFilteredError(RuntimeError):
+    pass
+
+
+class LabelResult(NamedTuple):
+    labels: dict
+    retries: int
+    input_tokens: int
+    output_tokens: int
+    content_filtered: bool
 
 
 def model_tag(model: str) -> str:
@@ -239,26 +263,48 @@ def _create_completion(
         )
 
 
+def _was_filtered(response) -> bool:
+    return response.choices[0].finish_reason == CONTENT_FILTER_FINISH_REASON
+
+
 def _request_labels(
     client: OpenAI,
     model: str,
     messages: list,
     timeout: float = LLM_TIMEOUT,
     reasoning_effort: str | None = None,
-) -> tuple[dict, int, int, int]:
-    """Send request to LLM and parse response, with one retry on JSON failure.
+) -> LabelResult:
+    """Send request to LLM and parse response.
 
-    Returns (labels_dict, retry_count, input_tokens, output_tokens). Token
-    counts are summed across the initial call and any retry.
+    An answer cut off by the server's content filter is asked for again without
+    copied text, and one that isn't valid JSON is asked for once more. Token
+    counts are summed across every call. Raises ContentFilteredError when the
+    content filter also cuts off the answer that was asked for again.
     """
     logger.debug(f"Sending to LM Studio ({model})...")
     response = _create_completion(client, model, messages, timeout, reasoning_effort)
-    raw = response.choices[0].message.content.strip()
     in_toks, out_toks = _usage_tokens(response)
+    content_filtered = _was_filtered(response)
+    if content_filtered:
+        logger.warning(
+            "Answer cut off by the content filter, asking again without copied text..."
+        )
+        messages = [*messages, {"role": "user", "content": WITHOUT_COPIED_TEXT_PROMPT}]
+        response = _create_completion(
+            client, model, messages, timeout, reasoning_effort
+        )
+        retry_in, retry_out = _usage_tokens(response)
+        in_toks, out_toks = in_toks + retry_in, out_toks + retry_out
+        if _was_filtered(response):
+            raise ContentFilteredError(CONTENT_FILTER_ERROR)
+    retries = int(content_filtered)
+    raw = response.choices[0].message.content.strip()
     logger.debug(f"Received response ({len(raw)} chars)")
 
     try:
-        return _parse_response(raw), 0, in_toks, out_toks
+        return LabelResult(
+            _parse_response(raw), retries, in_toks, out_toks, content_filtered
+        )
     except (json.JSONDecodeError, IndexError):
         logger.warning("JSON parse failed, retrying with correction prompt...")
         messages.append({"role": "assistant", "content": raw})
@@ -268,11 +314,19 @@ def _request_labels(
         response = _create_completion(
             client, model, messages, timeout, reasoning_effort
         )
-        raw = response.choices[0].message.content.strip()
         retry_in, retry_out = _usage_tokens(response)
+        if _was_filtered(response):
+            raise ContentFilteredError(CONTENT_FILTER_ERROR) from None
+        raw = response.choices[0].message.content.strip()
         labels = _parse_response(raw)
         logger.debug(f"Retry succeeded: {len(labels.get('keywords', []))} keywords")
-        return labels, 1, in_toks + retry_in, out_toks + retry_out
+        return LabelResult(
+            labels,
+            retries + 1,
+            in_toks + retry_in,
+            out_toks + retry_out,
+            content_filtered,
+        )
 
 
 def label_photo(
@@ -281,11 +335,8 @@ def label_photo(
     image_b64: str,
     filename: str,
     reasoning_effort: str | None = None,
-) -> tuple[dict, int, int, int]:
-    """Send a photo to the LLM for labeling.
-
-    Returns (labels, retries, input_tokens, output_tokens).
-    """
+) -> LabelResult:
+    """Send a photo to the LLM for labeling."""
     logger.debug(f"Labeling photo: {filename}")
     messages = [
         {"role": "system", "content": PHOTO_SYSTEM_PROMPT},
@@ -300,11 +351,9 @@ def label_photo(
             ],
         },
     ]
-    labels, retries, in_toks, out_toks = _request_labels(
-        client, model, messages, reasoning_effort=reasoning_effort
-    )
-    logger.debug(f"Parsed: {len(labels.get('keywords', []))} keywords")
-    return labels, retries, in_toks, out_toks
+    result = _request_labels(client, model, messages, reasoning_effort=reasoning_effort)
+    logger.debug(f"Parsed: {len(result.labels.get('keywords', []))} keywords")
+    return result
 
 
 def _video_messages(frames_b64: list[str], text: str) -> list[dict]:
@@ -354,7 +403,7 @@ def _merge_labels(
     segment_labels: list[dict],
     transcript: str,
     reasoning_effort: str | None = None,
-) -> tuple[dict, int, int, int]:
+) -> LabelResult:
     return _request_labels(
         client,
         model,
@@ -373,17 +422,15 @@ def label_video(
     transcript: str = "",
     *,
     reasoning_effort: str | None = None,
-) -> tuple[dict, int, int, int]:
-    """Send video frames to the LLM for labeling.
-
-    Returns (labels, retries, input_tokens, output_tokens).
-    """
+) -> LabelResult:
+    """Send video frames to the LLM for labeling."""
     total = len(frames_b64)
     size = batch_size if batch_size > 0 else total
     logger.debug(f"Labeling video: {filename} ({total} frames, batch size {size})")
 
     segment_labels = []
     retries = in_toks = out_toks = 0
+    content_filtered = False
     for start in range(0, total, size):
         batch = frames_b64[start : start + size]
         if len(batch) == total:
@@ -400,7 +447,7 @@ def label_video(
                 f" extracted at equal intervals from a video."
                 f" Label this part of the video:"
             )
-        labels, r, i, o = _request_labels(
+        labels, r, i, o, f = _request_labels(
             client,
             model,
             _video_messages(batch, text),
@@ -408,18 +455,20 @@ def label_video(
         )
         segment_labels.append(labels)
         retries, in_toks, out_toks = retries + r, in_toks + i, out_toks + o
+        content_filtered = content_filtered or f
 
     if len(segment_labels) == 1 and not transcript:
         labels = segment_labels[0]
     else:
         logger.debug(f"Merging labels from {len(segment_labels)} batches...")
-        labels, r, i, o = _merge_labels(
+        labels, r, i, o, f = _merge_labels(
             client, model, segment_labels, transcript, reasoning_effort
         )
         retries, in_toks, out_toks = retries + r, in_toks + i, out_toks + o
+        content_filtered = content_filtered or f
 
     logger.debug(f"Parsed: {len(labels.get('keywords', []))} keywords")
-    return labels, retries, in_toks, out_toks
+    return LabelResult(labels, retries, in_toks, out_toks, content_filtered)
 
 
 def add_transcript_to_labels(
@@ -428,5 +477,5 @@ def add_transcript_to_labels(
     labels: dict,
     transcript: str,
     reasoning_effort: str | None = None,
-) -> tuple[dict, int, int, int]:
+) -> LabelResult:
     return _merge_labels(client, model, [labels], transcript, reasoning_effort)
