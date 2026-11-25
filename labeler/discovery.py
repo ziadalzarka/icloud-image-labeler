@@ -66,7 +66,7 @@ def _needs_reindex(
 def _is_outdated(
     p: osxphotos.PhotoInfo, model_tags: set[str], expected_video_tag: str | None
 ) -> bool:
-    return _has_model_tag(p) and _needs_reindex(p, model_tags, expected_video_tag)
+    return not is_unlabeled(p) and _needs_reindex(p, model_tags, expected_video_tag)
 
 
 def _newest(items: list[osxphotos.PhotoInfo], limit: int) -> list[osxphotos.PhotoInfo]:
@@ -99,7 +99,8 @@ def _outdated_items(
     if outdated:
         logger.info(
             f"Found {len(photos)} photos and {len(videos)} videos labeled with "
-            "another model or other frame settings; relabeling "
+            "another model, with no model tag or with other frame settings; "
+            "relabeling "
             f"{len(taken_photos)} photos and {len(taken_videos)} videos this cycle"
         )
     return taken_photos + taken_videos
@@ -127,8 +128,9 @@ def get_unprocessed_media(
         reindex: If True, include items whose model tag matches none of
             ``expected_model_tags`` (stale or never processed), and videos
             missing ``expected_video_tag``. Otherwise only items labeled by
-            another model or with other frame settings are relabeled, up to
-            ``outdated_photo_limit`` photos and ``outdated_video_limit`` videos.
+            another model, with no model tag or with other frame settings are
+            relabeled, up to ``outdated_photo_limit`` photos and
+            ``outdated_video_limit`` videos.
         expected_model_tags: Set of valid model tags (``m:<hash>``). An item
             is considered up-to-date if any of its keywords appears here.
     """
