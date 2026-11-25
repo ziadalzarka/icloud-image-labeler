@@ -24,7 +24,7 @@ macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Que
   - `transcriber.py` — optional Whisper transcription of videos, with mlx-whisper on the Mac or a Whisper server (`whisper_url`), called from video processing
   - `migrate.py` — `migrate normalize-keywords` and `migrate redo-transcripts` commands for existing libraries
   - `writer.py` — metadata writes: keywords and title through PhotoKit, the description through Photos.app's AppleScript
-- `devbox/whisper/` — the faster-whisper server (Docker, CUDA) that runs on devbox
+- `devbox/whisper/` — the faster-whisper server (Docker, CUDA) that runs on devbox. Huddle's live transcription uses the same server, so devbox loads Whisper once: `/transcribe` also takes `prompt`, `beam_size` and `temperature`, `priority=live` puts a request ahead of any waiting ones (not the one running), and `POST /load` loads the model without audio
 
 ## Key Constraints
 

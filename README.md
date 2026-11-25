@@ -98,6 +98,8 @@ Codes are Whisper's two-letter language codes (`ar`, `en`, `fr`, ...). With one 
 
 Whisper can run on another machine with a GPU instead of this Mac. `devbox/whisper/` has a small server for that: faster-whisper `large-v3` in a CUDA container, which loads the model on the first request and unloads it after 5 minutes with no requests. The Mac sends each video's audio and keeps all the steps above (language per 30 seconds, dropping made-up text), so transcripts come out the same way. mlx-whisper isn't needed on the Mac then.
 
+Huddle's live transcription uses the same server, so devbox only ever loads Whisper once. Its short phrases go ahead of videos waiting in line, but wait for the one being transcribed.
+
 ```sh
 icloud-image-labeler config set whisper_url http://devbox.local:8178
 icloud-image-labeler config set whisper_api_key <the server's key>

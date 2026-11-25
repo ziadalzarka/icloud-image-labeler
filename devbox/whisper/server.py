@@ -21,6 +21,13 @@ PCM_SCALE = 32768.0
 MAX_BODY_BYTES = 512 * 1024 * 1024
 IDLE_CHECK_SECONDS = 5
 STOP_TIMEOUT_SECONDS = 10
+MAX_PROMPT_CHARS = 2000
+MAX_BEAM_SIZE = 10
+WHISPER_SETTING_NAMES = {
+    "prompt": "initial_prompt",
+    "beam_size": "beam_size",
+    "temperature": "temperature",
+}
 
 logger = logging.getLogger("labeler-whisper")
 
@@ -39,12 +46,13 @@ def window_languages(model, audio) -> dict:
     return {"windows": windows}
 
 
-def transcribe(model, audio, language, clip_timestamps) -> dict:
+def transcribe(model, audio, options) -> dict:
     segments, info = model.transcribe(
         audio,
-        language=language,
-        clip_timestamps=clip_timestamps or "0",
+        language=options.get("language"),
+        clip_timestamps=options.get("clip_timestamps") or "0",
         condition_on_previous_text=False,
+        **whisper_settings(options),
     )
     return {
         "language": info.language,
@@ -62,6 +70,14 @@ def transcribe(model, audio, language, clip_timestamps) -> dict:
     }
 
 
+def whisper_settings(options: dict) -> dict:
+    return {
+        setting: options[name]
+        for name, setting in WHISPER_SETTING_NAMES.items()
+        if name in options
+    }
+
+
 def handle_model_request(model, language_codes, kind, pcm, options):
     import numpy as np
 
@@ -71,7 +87,7 @@ def handle_model_request(model, language_codes, kind, pcm, options):
     audio = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / PCM_SCALE
     if kind == "languages":
         return window_languages(model, audio)
-    return transcribe(model, audio, language, options.get("clip_timestamps"))
+    return transcribe(model, audio, options)
 
 
 def run_model_process(connection, model_name):
@@ -102,11 +118,51 @@ def run_model_process(connection, model_name):
             connection.send(("error", f"{type(error).__name__}: {error}"))
 
 
+class PriorityLock:
+    def __init__(self):
+        self.condition = threading.Condition()
+        self.is_held = False
+        self.waiting_live = 0
+
+    @contextlib.contextmanager
+    def hold(self, is_live: bool):
+        with self.condition:
+            if is_live:
+                self.waiting_live += 1
+            self.condition.wait_for(lambda: self._is_turn_of(is_live))
+            if is_live:
+                self.waiting_live -= 1
+            self.is_held = True
+        try:
+            yield
+        finally:
+            self._release()
+
+    @contextlib.contextmanager
+    def hold_if_free(self):
+        with self.condition:
+            is_free = not self.is_held and not self.waiting_live
+            self.is_held = self.is_held or is_free
+        try:
+            yield is_free
+        finally:
+            if is_free:
+                self._release()
+
+    def _is_turn_of(self, is_live: bool) -> bool:
+        return not self.is_held and (is_live or not self.waiting_live)
+
+    def _release(self):
+        with self.condition:
+            self.is_held = False
+            self.condition.notify_all()
+
+
 class ModelProcess:
     def __init__(self, model_name: str, idle_unload_seconds: float):
         self.model_name = model_name
         self.idle_unload_seconds = idle_unload_seconds
-        self.lock = threading.Lock()
+        self.lock = PriorityLock()
         self.process = None
         self.connection = None
         self.last_used = time.monotonic()
@@ -115,11 +171,9 @@ class ModelProcess:
     def loaded(self) -> bool:
         return self.process is not None and self.process.is_alive()
 
-    def run(self, kind: str, pcm: bytes, options: dict) -> dict:
-        with self.lock:
-            if not self.loaded:
-                self._stop()
-                self._start()
+    def run(self, kind: str, pcm: bytes, options: dict, is_live: bool) -> dict:
+        with self.lock.hold(is_live):
+            self._load_if_needed()
             try:
                 self.connection.send((kind, pcm, options))
                 status, result = self.connection.recv()
@@ -134,24 +188,34 @@ class ModelProcess:
             raise RuntimeError(result)
         return result
 
+    def load(self):
+        with self.lock.hold(is_live=True):
+            self._load_if_needed()
+            self.last_used = time.monotonic()
+
     def stop(self):
-        with self.lock:
+        with self.lock.hold(is_live=True):
             self._stop()
 
     def unload_when_idle(self):
         while True:
             time.sleep(IDLE_CHECK_SECONDS)
-            if not self.lock.acquire(blocking=False):
-                continue
-            try:
-                idle = time.monotonic() - self.last_used
-                if self.process is not None and (
-                    not self.loaded or idle >= self.idle_unload_seconds
-                ):
-                    self._stop()
-                    logger.info(f"Unloaded {self.model_name} after {idle:.0f}s idle")
-            finally:
-                self.lock.release()
+            with self.lock.hold_if_free() as is_free:
+                if is_free:
+                    self._unload_if_idle()
+
+    def _unload_if_idle(self):
+        idle = time.monotonic() - self.last_used
+        if self.process is not None and (
+            not self.loaded or idle >= self.idle_unload_seconds
+        ):
+            self._stop()
+            logger.info(f"Unloaded {self.model_name} after {idle:.0f}s idle")
+
+    def _load_if_needed(self):
+        if not self.loaded:
+            self._stop()
+            self._start()
 
     def _start(self):
         started = time.monotonic()
@@ -200,6 +264,32 @@ def parse_clip_timestamps(value: str) -> list[float]:
     return times
 
 
+def parse_beam_size(value: str) -> int:
+    try:
+        beam_size = int(value)
+    except ValueError:
+        raise BadRequest(f"Bad beam_size: {value}") from None
+    if not 1 <= beam_size <= MAX_BEAM_SIZE:
+        raise BadRequest(f"beam_size must be from 1 to {MAX_BEAM_SIZE}")
+    return beam_size
+
+
+def parse_temperature(value: str) -> float:
+    try:
+        temperature = float(value)
+    except ValueError:
+        raise BadRequest(f"Bad temperature: {value}") from None
+    if not 0 <= temperature <= 1:
+        raise BadRequest("temperature must be from 0 to 1")
+    return temperature
+
+
+def parse_prompt(value: str) -> str:
+    if len(value) > MAX_PROMPT_CHARS:
+        raise BadRequest(f"prompt must be at most {MAX_PROMPT_CHARS} characters")
+    return value
+
+
 def transcribe_options(query: str) -> dict:
     params = parse_qs(query)
     options = {}
@@ -207,7 +297,17 @@ def transcribe_options(query: str) -> dict:
         options["language"] = params["language"][0].strip().lower()
     if params.get("clip_timestamps", [""])[0]:
         options["clip_timestamps"] = parse_clip_timestamps(params["clip_timestamps"][0])
+    if params.get("prompt", [""])[0].strip():
+        options["prompt"] = parse_prompt(params["prompt"][0].strip())
+    if params.get("beam_size", [""])[0]:
+        options["beam_size"] = parse_beam_size(params["beam_size"][0])
+    if params.get("temperature", [""])[0]:
+        options["temperature"] = parse_temperature(params["temperature"][0])
     return options
+
+
+def is_live_request(query: str) -> bool:
+    return parse_qs(query).get("priority", [""])[0] == "live"
 
 
 def make_handler(api_key: str, model_process: ModelProcess):
@@ -225,7 +325,7 @@ def make_handler(api_key: str, model_process: ModelProcess):
 
         def do_POST(self):
             url = urlparse(self.path)
-            if url.path not in ("/languages", "/transcribe"):
+            if url.path not in ("/languages", "/transcribe", "/load"):
                 self.close_connection = True
                 self.send_json(404, {"error": "Not found"})
                 return
@@ -238,6 +338,10 @@ def make_handler(api_key: str, model_process: ModelProcess):
             if not self.authorized():
                 self.send_json(401, {"error": "Unauthorized"})
                 return
+            if url.path == "/load":
+                self.load_model()
+                return
+            is_live = is_live_request(url.query)
             try:
                 if not pcm or len(pcm) % 2:
                     raise BadRequest("Body must be 16 kHz mono int16 PCM")
@@ -245,7 +349,7 @@ def make_handler(api_key: str, model_process: ModelProcess):
                     transcribe_options(url.query) if url.path == "/transcribe" else {}
                 )
                 started = time.monotonic()
-                result = model_process.run(url.path.strip("/"), pcm, options)
+                result = model_process.run(url.path.strip("/"), pcm, options, is_live)
             except BadRequest as error:
                 self.send_json(400, {"error": str(error)})
                 return
@@ -255,10 +359,19 @@ def make_handler(api_key: str, model_process: ModelProcess):
                 return
             seconds = len(pcm) / 2 / SAMPLE_RATE
             logger.info(
-                f"{url.path}: {seconds:.0f}s of audio in "
+                f"{url.path}{' (live)' if is_live else ''}: {seconds:.0f}s of audio in "
                 f"{time.monotonic() - started:.1f}s"
             )
             self.send_json(200, result)
+
+        def load_model(self):
+            try:
+                model_process.load()
+            except Exception as error:
+                logger.exception("/load failed")
+                self.send_json(500, {"error": str(error)})
+                return
+            self.send_json(200, {"loaded": True})
 
         def authorized(self) -> bool:
             header = self.headers.get("Authorization", "")
