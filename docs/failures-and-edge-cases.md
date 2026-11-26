@@ -30,7 +30,7 @@ Each entry gives the version and commit that dealt with it. **Open** means 0.10.
 | # | Rule | Why |
 |---|---|---|
 | 1 | Skip an item for good only for a reason the item itself has: a file that was there and had no video stream, or a reply the content filter cut off twice. A download that didn't arrive, or an app that wasn't answering, is tried again on a later run. | 130 videos were skipped forever because iCloud hadn't sent them (fixed in 0.10.2). On 27 Oct a hung Photos.app made every iCloud video look broken. |
-| 2 | Ask Photos for small versions (1024 px photos, 720p videos), start many requests at once, use whichever arrives first, and give each a timeout. | A 4K original is 360-700 MB and iCloud sent 0.16-4.7 MB/s. Cold photos took 1.8 s each one at a time and 0.22 s each with 32 started ahead. One stuck video used to hold up every other video for 15 minutes. |
+| 2 | Ask Photos for small versions (1024 px photos, 720p videos), start many requests at once, use whichever arrives first, and give each a timeout. When the time is up, let the download keep going and come back to the item later instead of cancelling it. | A 4K original is 360-700 MB and iCloud sent 0.16-4.7 MB/s. Cold photos took 1.8 s each one at a time and 0.22 s each with 32 started ahead. One stuck video used to hold up every other video for 15 minutes, and a cancelled download starts from zero. |
 | 3 | Put many changes into one Photos save. | photolibraryd saves one change at a time, and a save that adds or removes a keyword loads every photo that has it: about 1 s per photo saved alone, 0.45 s for 10 photos in one save. |
 | 4 | Release each item's images as soon as it is done. | Without an autorelease pool around each export the daemon kept 3.6 MB per photo and reached 19 GB. |
 | 5 | Stop the queue on server and account errors instead of failing the item. | Running out of credits, a model with no image input, and "no model loaded" were logged as more than 14,000 item failures. **Open.** |
@@ -44,13 +44,15 @@ Each entry gives the version and commit that dealt with it. **Open** means 0.10.
 
 ## How a photo or video reaches the labeler
 
-Videos, as of 0.10.2 (`_resolve_video_path` in `exporter.py`):
+Videos, as of 0.10.3 (`_resolve_video_path` in `exporter.py`):
 
 ```
 720p version through PhotoKit (VIDEO_PREFETCH = 4 started ahead, the first one ready is used)
   │
   ├─ a file with a video stream ──────────────────────────────► label it
-  ├─ no answer in VIDEO_EXPORT_TIMEOUT (300 s), iCloud-only ──► VideoNotDownloaded: next cycle
+  ├─ no answer in VIDEO_EXPORT_TIMEOUT (300 s), first time ───► to the end of the batch, download keeps going
+  ├─ no answer in 300 s again, iCloud-only ───────────────────► VideoNotDownloaded: next cycle
+  ├─ the download failed (no asset), iCloud-only ─────────────► VideoNotDownloaded: next cycle
   └─ nothing, an AVComposition (slow motion), or no stream
         │
         ▼
@@ -80,6 +82,10 @@ Photos (`export_photo_as_base64`):
 - **A download that never arrived was recorded as a broken video.** 130 videos (May to Nov 2026, 127 of them iCloud-only at the time) had "No usable video source" errors, which `PERMANENT_FAILURE_PATTERNS` skips forever. For 118 of them Photos' export had returned a 691-999 byte file with no video stream, and for the rest nothing, because the original was still in iCloud. 75 of them had been labeled or transcribed fine before. Asked again on 26 Nov, PhotoKit returned a normal 720p file for each one tried (8-93 s). Fixed in 0.10.2 (6e30262): only a 720p file or an original that was there and had no video stream counts as permanent; otherwise `VideoNotDownloaded` is raised and the video is tried again next cycle. The 130 rows were deleted from `item_metrics` the same day so those videos are tried again; in the first cycle after that, one whose 720p version didn't arrive in 300 s was marked to try again instead of skipped.
 - **A hung Photos.app made every iCloud video look broken.** On 27 Oct 2026 Photos answered even simple queries with `AppleEvent timed out (-1712)`, and every iCloud-only video export returned nothing after 120 s, which was recorded as "No usable video source". 38 videos were marked permanent before anyone noticed; a full reindex would have skipped thousands. After restarting Photos the same videos exported in 2-26 s. The exporter now restarts Photos.app and tries once more when an iCloud-only export returns nothing (777d1ca, 0.1.4).
 - **One stuck video held up all the others.** Up to 0.9.1, a video whose 720p version didn't arrive waited 300 s, then 300 s more for a Photos export of the original, then a Photos restart: about 15 minutes, while every other video waited. On 24 Nov five videos in a row took about 15 minutes each, and a batch could retry an item up to 10 times. 0.9.2 (345df40) exports whichever requested item is ready first (`PhotoKitPrefetch.next_ready`), counts each item's timeout from when it reached the front, and fails a timed-out iCloud-only video at once so it is tried next cycle.
+- **A failed 720p download still went to the Photos export of the original.** The 0.9.2 fix only covered a 720p request that timed out. When cloudd gave up on the download instead and PhotoKit returned no asset, the video still went to the Photos export of the original, waited 300 s, restarted Photos.app and waited 300 s more. On 26 Nov `IMG_7526.MOV` held up every other video from 12:54 to 13:09 that way; cloudd had stopped its 720p download after 19 MB in 234 s. Since 0.10.3 PhotoKit's empty answer for an iCloud-only video raises `VideoNotDownloaded` at once (`DownloadFailed` in `exporter.py`). An `AVComposition` (slow motion) and videos whose original is on the Mac still go to the export.
+- **A timed-out download threw away what had arrived.** Cancelling a PhotoKit request stops cloudd's download, and the next cycle starts from zero. With iCloud at 0.3 MB/s, a 720p file over about 45-90 MB could never arrive in 300 s, so it failed every cycle. Since 0.10.3 an item still downloading when its time is up goes to the end of the batch once and its request keeps going (`PhotoKitPrefetch.put_back`); it is cancelled only if it still hasn't arrived after a second 300 s at the front. A finished 720p download is kept in the library's `resources/derivatives` folder, so it is there for later cycles too.
+- **More requests at once don't make iCloud faster.** On 26 Nov at midday, with 4, 16 and 32 extra 720p requests, cloudd's download stayed at 0.24-0.38 MB/s, and none of 32 extra requests got any data in 8 minutes. cloudd downloads files in 30 MB pieces, about two at a time, and a piece can wait 2-24 minutes in its queue before it starts (`Observed ... seconds in queue` in cloudd's `com.apple.mmcs` log). The requests are already `qos=UserInitiated`. Each piece came at about 8 Mbit/s from 01:00 to 07:00 and about 1.2 Mbit/s from 12:00, from the same iCloud edge (`usqas5`), while a plain download on the same line got 25 Mbit/s and latency was normal. `VIDEO_PREFETCH` stays at 4.
+- **`daemon status` showed nothing while waiting on iCloud.** It lists items being labeled, so during a long download it showed only "Last done N minutes ago" and looked stuck. Since 0.10.3 the labeler logs "Waiting for iCloud" after 10 s with nothing ready and "Stopped waiting for iCloud" when it moves on, and `daemon status` shows the wait.
 - **Originals are too big to download.** A 4K video is 360-700 MB, and iCloud gave about 4.7 MB/s on a good day. Photos are requested at `max_dimension` and videos as Photos' 720p version (`PHVideoRequestOptionsDeliveryModeMediumQualityFormat`, about 45 MB instead of 700 MB) (85a0490, 0.5.0).
 - **iCloud's speed swings.** 4.7 MB/s was typical, but it dropped to 0.2 MB/s within an hour on 21 Nov, and cloudd sent about 160 KB/s on 24 Nov. Photos exports of video originals took 17-178 s (55 s on average). Nothing in the labeler controls this; requesting ahead (below) hides most of it.
 - **Downloads one at a time were slow.** Cold photos took 1.8 s each one at a time and 0.22 s each with 32 requested ahead. Requests for the next 32 photos and 4 videos are started before the current one is used (02c9f2b, 0.9.0).
@@ -230,7 +236,7 @@ What 0.10.2 still does that a rewrite shouldn't:
 8. Items labeled from a derivative count as a full success and are never labeled again from the full image.
 9. Empty replies don't log `finish_reason`.
 10. Four code paths force-quit Photos.app without knowing about each other.
-11. A truly broken video that is only in iCloud and that PhotoKit gives nothing for is now tried every cycle (one Photos export each time) rather than skipped.
+11. A truly broken video that is only in iCloud and that PhotoKit gives nothing for is now tried every cycle (one PhotoKit request each time) rather than skipped.
 
 ## Timeline of the worst episodes
 
@@ -252,3 +258,4 @@ What 0.10.2 still does that a rewrite shouldn't:
 | 24 Nov | Five stuck iCloud videos took about 15 minutes each; 155 Photos.app force-quits by the writer | 345df40 (0.9.2) |
 | 24-25 Nov | 34 written photos marked failed with "database is locked" | 05cfea0 (0.10.1) |
 | May-26 Nov | 130 videos skipped forever as "No usable video source" because iCloud hadn't sent them | 6e30262 (0.10.2) |
+| 26 Nov midday | iCloud sent about 0.3 MB/s; 4 of the first 40 videos timed out and lost their partial downloads, and one failed 720p download held everything up for 14 minutes | 0.10.3 |

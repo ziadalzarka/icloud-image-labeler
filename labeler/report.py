@@ -28,6 +28,11 @@ TRANSCRIPT_FINISHED = re.compile(
     r"^\[transcript \d+/\d+\] (?:Done|Failed): (?P<name>.+?)(?:: .*)?$"
 )
 PROCESSING = re.compile(r"^Processing \d+ (photos|videos)")
+ICLOUD_WAIT = re.compile(
+    r"^Waiting for iCloud: none of the next (?P<what>\d+ (?:photos|videos)) "
+    r"has arrived yet$"
+)
+ICLOUD_WAIT_OVER = "Stopped waiting for iCloud"
 
 
 @dataclass
@@ -46,6 +51,7 @@ class LogState:
     phase: str | None = None
     last_finished: tuple[str, float] | None = None
     last_line_at: float | None = None
+    icloud_wait: tuple[str, float] | None = None
 
 
 def _read_tail(path: Path) -> list[str]:
@@ -90,8 +96,14 @@ def parse_log(lines: list[str]) -> LogState:
         elif message.startswith(("Sleeping ", "No unprocessed")):
             state.phase = None
             state.in_flight.clear()
+            state.icloud_wait = None
         elif match := PROCESSING.match(message):
             state.phase = match[1]
+            state.icloud_wait = None
+        elif match := ICLOUD_WAIT.match(message):
+            state.icloud_wait = (match["what"], at)
+        elif message.startswith(ICLOUD_WAIT_OVER):
+            state.icloud_wait = None
         elif match := LABELING.match(message):
             _start_of(state, match, at)
         elif match := FINISHED.match(message):
@@ -238,6 +250,12 @@ def now_section(state: LogState, run: tuple | None) -> list[str]:
     if state.last_finished:
         name, at = state.last_finished
         lines.append(f"  Last done   {name} ({ago(at)})")
+    if state.icloud_wait:
+        what, at = state.icloud_wait
+        lines.append(
+            f"  Waiting     for iCloud to send any of the next {what} "
+            f"({duration(time.time() - at)})"
+        )
     if state.in_flight:
         lines.append(f"  Labeling    {len(state.in_flight)} at the moment:")
         for item in sorted(state.in_flight.values(), key=lambda i: i.since):

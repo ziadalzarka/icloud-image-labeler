@@ -63,6 +63,7 @@ DEFAULT_REFRESH_INTERVAL = 21600  # seconds (6 hours)
 PHOTO_PREFETCH = 32
 VIDEO_PREFETCH = 4
 WORKERS_PER_LLM_SLOT = 4
+ICLOUD_WAIT_LOG_AFTER_S = 10
 
 
 class MaxFailuresExceeded(RuntimeError):
@@ -619,6 +620,15 @@ def _bring_ready_item_forward(
     position = downloads.next_ready(items[idx : idx + depth])
     if position is None:
         return False
+    if downloads.put_back(items[idx + position]):
+        item = items.pop(idx + position)
+        items.append(item)
+        logger.info(
+            f"iCloud hasn't sent {item.original_filename} within "
+            f"{downloads.timeout:.0f}s; it keeps downloading and is tried again "
+            f"at the end of the batch"
+        )
+        return False
     if position:
         items.insert(idx, items.pop(idx + position))
         logger.debug(
@@ -626,6 +636,32 @@ def _bring_ready_item_forward(
             f"{items[idx].original_filename} goes first"
         )
     return True
+
+
+@dataclass
+class _ICloudWait:
+    media_type: str
+    since: float | None = None
+    logged: bool = False
+
+    def still_waiting(self, count: int) -> None:
+        now = time.monotonic()
+        if self.since is None:
+            self.since = now
+        if not self.logged and now - self.since >= ICLOUD_WAIT_LOG_AFTER_S:
+            logger.info(
+                f"Waiting for iCloud: none of the next {count} "
+                f"{self.media_type}s has arrived yet"
+            )
+            self.logged = True
+
+    def over(self) -> None:
+        if self.logged:
+            logger.info(
+                f"Stopped waiting for iCloud after {time.monotonic() - self.since:.0f}s"
+            )
+        self.since = None
+        self.logged = False
 
 
 def _label_in_parallel(
@@ -642,6 +678,7 @@ def _label_in_parallel(
     workers = server_pool.total_threads * WORKERS_PER_LLM_SLOT
     executor = ThreadPoolExecutor(max_workers=workers)
     in_flight: dict = {}
+    icloud_wait = _ICloudWait(media_type)
     idx = 0
     try:
         while (idx < len(items) or in_flight) and not is_shutting_down():
@@ -651,8 +688,10 @@ def _label_in_parallel(
                 continue
 
             if prefetch and not _bring_ready_item_forward(items, idx, *prefetch):
+                icloud_wait.still_waiting(len(items[idx : idx + prefetch[1]]))
                 wait_for_photokit()
                 continue
+            icloud_wait.over()
 
             item = items[idx]
             idx += 1

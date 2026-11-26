@@ -41,6 +41,10 @@ class DownloadTimedOut(Exception):
     pass
 
 
+class DownloadFailed(Exception):
+    pass
+
+
 class VideoNotDownloaded(RuntimeError):
     pass
 
@@ -140,6 +144,8 @@ class _PhotoKitRequest:
                     f"Photos didn't return {self._uuid} within {timeout + waited:.0f}s"
                 )
                 raise DownloadTimedOut(self._uuid)
+        if isinstance(self._result, DownloadFailed):
+            raise self._result
         return self._result
 
     def cancel(self):
@@ -155,6 +161,11 @@ class PhotoKitPrefetch:
         self._timeout = timeout
         self._pending: dict[str, _PhotoKitRequest | None] = {}
         self._first_waited: dict[str, float] = {}
+        self._put_back: set[str] = set()
+
+    @property
+    def timeout(self) -> float:
+        return self._timeout
 
     def start(self, items: Iterable[osxphotos.PhotoInfo]) -> None:
         with objc.autorelease_pool():
@@ -173,6 +184,14 @@ class PhotoKitPrefetch:
                 return position
         return None
 
+    def put_back(self, item: osxphotos.PhotoInfo) -> bool:
+        request = self._pending.get(item.uuid)
+        if request is None or request.done or item.uuid in self._put_back:
+            return False
+        self._put_back.add(item.uuid)
+        self._first_waited.pop(item.uuid, None)
+        return True
+
     def take(self, item: osxphotos.PhotoInfo):
         if item.uuid in self._pending:
             request = self._pending.pop(item.uuid)
@@ -190,6 +209,7 @@ class PhotoKitPrefetch:
                 request.cancel()
         self._pending.clear()
         self._first_waited.clear()
+        self._put_back.clear()
 
 
 def _image_request(photo, max_dimension: int) -> _PhotoKitRequest | None:
@@ -368,8 +388,11 @@ def _video_request(photo) -> _PhotoKitRequest | None:
     )
 
     def start(manager, finish):
+        def handle(av_asset, _audio_mix, _info):
+            finish(av_asset if av_asset is not None else DownloadFailed(photo.uuid))
+
         return manager.requestAVAssetForVideo_options_resultHandler_(
-            asset, options, lambda av_asset, _audio_mix, _info: finish(av_asset)
+            asset, options, handle
         )
 
     return _PhotoKitRequest(photo, start)
@@ -382,11 +405,16 @@ def video_prefetch() -> PhotoKitPrefetch:
 def _medium_quality_video(photo, prefetch: PhotoKitPrefetch | None):
     try:
         av_asset = (prefetch or video_prefetch()).take(photo)
-    except DownloadTimedOut:
+    except (DownloadTimedOut, DownloadFailed) as e:
         if photo.ismissing:
+            reason = (
+                f"within {VIDEO_EXPORT_TIMEOUT}s"
+                if isinstance(e, DownloadTimedOut)
+                else "its 720p version: the download failed"
+            )
             raise VideoNotDownloaded(
-                f"iCloud didn't send {photo.original_filename} within "
-                f"{VIDEO_EXPORT_TIMEOUT}s; it is tried again next cycle"
+                f"iCloud didn't send {photo.original_filename} {reason}; "
+                f"it is tried again next cycle"
             ) from None
         return None, None
     if av_asset is None or not hasattr(av_asset, "URL"):
