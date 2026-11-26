@@ -6,7 +6,9 @@
 
 ## Project Overview
 
-macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Queries the Photos library for unprocessed media, sends to LLM for keyword/title/description/OCR generation, and writes metadata back via PhotoScript.
+macOS CLI tool that auto-labels iCloud Photos using a local LLM (LM Studio). Queries the Photos library for unprocessed media, sends to LLM for keyword/title/description/OCR generation, and writes metadata back through PhotoKit (keywords, title) and AppleScript (description).
+
+`docs/failures-and-edge-cases.md` records every failure and edge case met so far: what happened, why, what was done, and what is still open. When you fix or find one, add it there in the same commit.
 
 ## Architecture
 

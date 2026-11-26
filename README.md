@@ -8,13 +8,13 @@ Works with any OpenAI-compatible API — designed for [LM Studio](https://lmstud
 
 ```
 Photos.app ──> Discovery ──> Export ──> LLM ──> Writer ──> Photos.app
-               (osxphotos)   (Pillow)   (API)   (PhotoScript)
+               (osxphotos)   (Pillow)   (API)   (PhotoKit)
 ```
 
 1. **Discovery** — Queries the Photos library for media with no keywords set, filtered by date range and media type. Items this tool labeled with another model, and videos it labeled with other frame settings, are relabeled too, newest first, up to 2,000 photos and 200 videos per cycle; while more remain, the next cycle starts right away instead of waiting for the poll interval.
 2. **Export** — Gets each photo from Photos at `max_dimension` as JPEG and each video at 720p (exporting the original when Photos can't), then extracts frames from videos via ffmpeg (evenly spaced, at most 2 per second).
 3. **LLM** — Sends images to an OpenAI-compatible API. Returns structured JSON with keywords, title, description, and OCR text. Video frames are sent in batches, and a final text-only request merges the batch results into one set of labels.
-4. **Writer** — Writes metadata back into Photos.app via PhotoScript (AppleScript automation).
+4. **Writer** — Writes keywords and title back into Photos through PhotoKit, many items in one save, and the description with one AppleScript command, because PhotoKit refuses description changes.
 
 Items are exported one at a time, and each one's LLM requests and Photos write run in worker threads (up to `threads` at once), so the next item exports while earlier ones are labeled. All photos go first, then videos. Requests that fail with a rate limit (429) are retried with backoff.
 
@@ -197,7 +197,7 @@ If no config exists when you run `icloud-image-labeler run`, the setup wizard la
 |-----|---------|-------------|
 | `base_url` | `http://localhost:1234/v1` | OpenAI-compatible API endpoint |
 | `api_key` | `""` | API key (optional, empty for local LM Studio) |
-| `model` | `qwen/qwen3.5-9b` | Model identifier |
+| `model` | `google/gemma-4-e4b` | Model identifier |
 | `reasoning_effort` | `""` | Thinking level sent with every request, e.g. `low`, `medium`, `high` (empty = the server's default, and `none` for video merge requests) |
 | `days` | `0` | Look back N days (0 = all time) |
 | `to_days` | `0` | Skip most recent N days |
@@ -214,7 +214,7 @@ If no config exists when you run `icloud-image-labeler run`, the setup wizard la
 | `whisper_url` | `""` | Whisper server to send audio to (empty = mlx-whisper on this Mac) |
 | `whisper_api_key` | `""` | Key for the Whisper server |
 | `write` | `true` | Write metadata to Photos.app |
-| `poll_interval` | `300` | Seconds between cycles in loop/daemon mode |
+| `poll_interval` | `21600` | Seconds between cycles in loop/daemon mode |
 
 ## Migrations
 
@@ -281,7 +281,7 @@ labeler/
   processor.py  — batch orchestration: export in turn, label and write in parallel
   transcriber.py — optional Whisper transcription of videos (local or on a server), used by video labeling
   migrate.py    — one-off keyword migrations (normalize-keywords)
-  writer.py     — PhotoScript metadata writes (thread-safe)
+  writer.py     — keywords and title through grouped PhotoKit saves, the description through AppleScript
   metrics.py    — SQLite metrics recording
   daemon.py     — macOS Launch Agent lifecycle
   pause.py      — pausing exports and writes, and stopping after an hour paused
@@ -290,6 +290,10 @@ labeler/
   shutdown.py   — graceful shutdown (SIGINT/SIGTERM handling)
   checks.py     — pre-flight dependency checks (ffmpeg, Photos.app)
 ```
+
+## Failures and edge cases
+
+Every failure and edge case the labeler has run into, with what caused it and what was done about it, is in [docs/failures-and-edge-cases.md](docs/failures-and-edge-cases.md). It includes the problems that are still open.
 
 ## License
 
