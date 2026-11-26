@@ -41,6 +41,10 @@ class DownloadTimedOut(Exception):
     pass
 
 
+class VideoNotDownloaded(RuntimeError):
+    pass
+
+
 def _resize_if_needed(img, max_dim: int):
     """Resize image so the longest side is at most max_dim pixels.
 
@@ -380,7 +384,7 @@ def _medium_quality_video(photo, prefetch: PhotoKitPrefetch | None):
         av_asset = (prefetch or video_prefetch()).take(photo)
     except DownloadTimedOut:
         if photo.ismissing:
-            raise RuntimeError(
+            raise VideoNotDownloaded(
                 f"iCloud didn't send {photo.original_filename} within "
                 f"{VIDEO_EXPORT_TIMEOUT}s; it is tried again next cycle"
             ) from None
@@ -391,19 +395,11 @@ def _medium_quality_video(photo, prefetch: PhotoKitPrefetch | None):
     return (url.path() if url.isFileURL() else None), av_asset
 
 
-def _resolve_video_path(photo, tmpdir, prefetch: PhotoKitPrefetch | None = None):
-    """Use Photos' 720p version of the video; otherwise export the original
-    via Photos, falling back to the on-disk original.
+def _is_file(path) -> bool:
+    return bool(path) and Path(path).exists()
 
-    Photos.app's export pipeline sometimes returns a ~1 KB sidecar stub
-    instead of the rendered video (observed for many iPhone HEVC .MOV files).
-    Validate the export produced a real video stream, otherwise fall back
-    to ``photo.path``.
-    """
-    medium, av_asset = _medium_quality_video(photo, prefetch)
-    if medium and Path(medium).exists() and _has_video_stream(medium):
-        return medium, av_asset
 
+def _export_with_photos(photo, tmpdir) -> str | None:
     exported = photo.export(
         tmpdir, use_photos_export=True, timeout=VIDEO_EXPORT_TIMEOUT
     )
@@ -416,19 +412,45 @@ def _resolve_video_path(photo, tmpdir, prefetch: PhotoKitPrefetch | None = None)
         exported = photo.export(
             tmpdir, use_photos_export=True, timeout=VIDEO_EXPORT_TIMEOUT
         )
-    if exported and _has_video_stream(exported[0]):
-        return exported[0], None
+    return exported[0] if exported else None
+
+
+def _resolve_video_path(photo, tmpdir, prefetch: PhotoKitPrefetch | None = None):
+    """Use Photos' 720p version of the video; otherwise export the original
+    via Photos, falling back to the on-disk original.
+
+    Photos.app's export pipeline sometimes returns a ~1 KB sidecar stub
+    instead of the rendered video (observed for many iPhone HEVC .MOV files,
+    and for every iCloud-only video whose original Photos didn't download).
+    Validate the export produced a real video stream, otherwise fall back
+    to ``photo.path``. The video only counts as having no video stream when
+    the 720p version or the original was there and had none; when neither
+    was there, it is tried again next cycle.
+    """
+    medium, av_asset = _medium_quality_video(photo, prefetch)
+    if _is_file(medium) and _has_video_stream(medium):
+        return medium, av_asset
+
+    exported = _export_with_photos(photo, tmpdir)
+    if exported and _has_video_stream(exported):
+        return exported, None
 
     if exported:
-        size = Path(exported[0]).stat().st_size
+        size = Path(exported).stat().st_size
         logger.warning(
             f"Photos export for {photo.uuid} produced unusable file "
             f"({size} bytes, no video stream); falling back to original"
         )
 
-    if photo.path and Path(photo.path).exists() and _has_video_stream(photo.path):
+    if _is_file(photo.path) and _has_video_stream(photo.path):
         return photo.path, None
 
+    if not _is_file(medium) and not _is_file(photo.path):
+        raise VideoNotDownloaded(
+            f"iCloud didn't send {photo.original_filename}: Photos gave no 720p "
+            f"version and the original isn't on this Mac; it is tried again "
+            f"next cycle"
+        )
     raise RuntimeError(
         f"No usable video source for {photo.uuid} ({photo.original_filename}): "
         f"no video stream found in Photos export or original"
